@@ -1,83 +1,86 @@
 # cgc.spec
-# PyInstaller build spec for CodeGraphContext (Linux x86_64)
-#
-# Build with:
-#   .venv/bin/pyinstaller cgc.spec --clean
-#
-# Output: dist/cgc  (single self-contained binary)
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+# Multi-platform PyInstaller build spec for CodeGraphContext
+# Supports: Linux (x86_64/Aarch64), Windows, macOS
 
 import sys
 import os
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
 
-# ── Locate the venv site-packages ──────────────────────────────────────────
-site_packages = Path('.venv/lib/python3.12/site-packages')
+# ── Environment Detection ──────────────────────────────────────────────────
+is_win = sys.platform == 'win32'
+is_mac = sys.platform == 'darwin'
+is_linux = sys.platform == 'linux' or sys.platform == 'linux2'
 
-# ── 1. Binary .so files to bundle ──────────────────────────────────────────
+# Find site-packages dynamically
+# If we are in the venv, we can use sys.prefix
+prefix = Path(sys.prefix)
+if is_win:
+    site_packages = prefix / 'Lib' / 'site-packages'
+else:
+    # On Linux/Mac, find the pythonX.Y directory
+    lib_dir = prefix / 'lib'
+    py_dir = next(lib_dir.glob('python3.*'))
+    site_packages = py_dir / 'site-packages'
+
+print(f"Detected Platform: {sys.platform}")
+print(f"Using site-packages: {site_packages}")
+
+# ── 1. Binary files to bundle (.so, .pyd, .dylib) ───────────────────────────
 binaries = []
 
-# tree-sitter core binding
-ts_core = site_packages / 'tree_sitter' / '_binding.cpython-312-x86_64-linux-gnu.so'
-if ts_core.exists():
-    binaries.append((str(ts_core), 'tree_sitter'))
+# Bin extensions by platform
+ext = '*.so'
+if is_win:
+    ext = '*.pyd'
+elif is_mac:
+    ext = '*.dylib'
 
-# tree-sitter-language-pack: ALL language .so bindings
-ts_pack_bindings = site_packages / 'tree_sitter_language_pack' / 'bindings'
-if ts_pack_bindings.exists():
-    for so_file in ts_pack_bindings.glob('*.so'):
-        binaries.append((str(so_file), 'tree_sitter_language_pack/bindings'))
+def add_binary(package_path, pattern, target_subdir=None):
+    pkg_dir = site_packages / package_path
+    if pkg_dir.exists():
+        for f in pkg_dir.glob(pattern):
+            binaries.append((str(f), target_subdir or package_path))
 
-# tree-sitter-yaml binding
-ts_yaml = site_packages / 'tree_sitter_yaml' / '_binding.abi3.so'
-if ts_yaml.exists():
-    binaries.append((str(ts_yaml), 'tree_sitter_yaml'))
+# tree-sitter core
+add_binary('tree_sitter', ext)
 
-# tree-sitter-embedded-template binding
-ts_emb = site_packages / 'tree_sitter_embedded_template' / '_binding.abi3.so'
-if ts_emb.exists():
-    binaries.append((str(ts_emb), 'tree_sitter_embedded_template'))
+# tree-sitter-language-pack: ALL language bindings
+add_binary('tree_sitter_language_pack/bindings', ext)
 
-# tree-sitter-c-sharp binding
-ts_cs = site_packages / 'tree_sitter_c_sharp' / '_binding.abi3.so'
-if ts_cs.exists():
-    binaries.append((str(ts_cs), 'tree_sitter_c_sharp'))
+# other tree-sitter bindings
+add_binary('tree_sitter_yaml', ext)
+add_binary('tree_sitter_embedded_template', ext)
+add_binary('tree_sitter_c_sharp', ext)
 
 # KùzuDB native extension
-for kuzu_so in (site_packages / 'kuzu').glob('*.so'):
-    binaries.append((str(kuzu_so), 'kuzu'))
+add_binary('kuzu', ext)
 
-# FalkorDB Lite (redislite) native binary
-redis_bin = site_packages / 'redislite' / 'bin'
-if redis_bin.exists():
-    for f in redis_bin.iterdir():
-        binaries.append((str(f), 'redislite/bin'))
-
-falkordblite_scripts = site_packages / 'falkordblite.scripts'
-if falkordblite_scripts.exists():
-    for f in falkordblite_scripts.glob('*.so'):
-        binaries.append((str(f), 'falkordblite.scripts'))
+# FalkorDB Lite (only for Unix-like systems)
+if not is_win:
+    add_binary('redislite/bin', '*')
+    add_binary('falkordblite.scripts', ext)
 
 # ── 2. Data files ────────────────────────────────────────────────────────────
 datas = []
 
-# stdlibs: dynamically imports py3.py, py312.py, etc. via importlib — must be data files
+# stdlibs: dynamically imports py3.py, py312.py, etc. via importlib
 stdlibs_dir = site_packages / 'stdlibs'
 if stdlibs_dir.exists():
-    for py_file in stdlibs_dir.glob('*.py'):
-        datas.append((str(py_file), 'stdlibs'))
+    for f in stdlibs_dir.glob('*.py'):
+        datas.append((str(f), 'stdlibs'))
 
-# mcp package data files
+# mcp package data
 datas += collect_data_files('mcp', includes=['**/*'])
 
-# mcp.json shipped with the package
+# mcp.json shipped with CGC
 mcp_json = Path('src/codegraphcontext/mcp.json')
 if mcp_json.exists():
     datas.append((str(mcp_json), 'codegraphcontext'))
 
-# tree-sitter-language-pack Python metadata files
+# tree-sitter-language-pack metadata
 ts_pack_dir = site_packages / 'tree_sitter_language_pack'
 if ts_pack_dir.exists():
     for f in ts_pack_dir.glob('*.py'):
@@ -85,15 +88,15 @@ if ts_pack_dir.exists():
     for f in ts_pack_dir.glob('*.pyi'):
         datas.append((str(f), 'tree_sitter_language_pack'))
 
-# redislite config/data files needed by falkordb worker subprocess
-redislite_dir = site_packages / 'redislite'
-if redislite_dir.exists():
-    for f in redislite_dir.glob('*.conf'):
-        datas.append((str(f), 'redislite'))
+# redislite configs (Unix only)
+if not is_win:
+    redislite_dir = site_packages / 'redislite'
+    if redislite_dir.exists():
+        for f in redislite_dir.glob('*.conf'):
+            datas.append((str(f), 'redislite'))
 
 # ── 3. Hidden imports ────────────────────────────────────────────────────────
 hidden_imports = [
-    # ── CodeGraphContext internal modules ──
     'codegraphcontext',
     'codegraphcontext.cli',
     'codegraphcontext.cli.main',
@@ -124,7 +127,7 @@ hidden_imports = [
     'codegraphcontext.tools.scip_indexer',
     'codegraphcontext.tools.scip_pb2',
     'codegraphcontext.tools.advanced_language_query_tool',
-    # language modules
+    'codegraphcontext.tools.languages',
     'codegraphcontext.tools.languages.python',
     'codegraphcontext.tools.languages.javascript',
     'codegraphcontext.tools.languages.typescript',
@@ -143,7 +146,6 @@ hidden_imports = [
     'codegraphcontext.tools.languages.haskell',
     'codegraphcontext.tools.languages.dart',
     'codegraphcontext.tools.languages.perl',
-    # query toolkits
     'codegraphcontext.tools.query_tool_languages.python_toolkit',
     'codegraphcontext.tools.query_tool_languages.javascript_toolkit',
     'codegraphcontext.tools.query_tool_languages.typescript_toolkit',
@@ -159,18 +161,15 @@ hidden_imports = [
     'codegraphcontext.tools.query_tool_languages.haskell_toolkit',
     'codegraphcontext.tools.query_tool_languages.dart_toolkit',
     'codegraphcontext.tools.query_tool_languages.perl_toolkit',
-    # handlers
     'codegraphcontext.tools.handlers.analysis_handlers',
     'codegraphcontext.tools.handlers.indexing_handlers',
     'codegraphcontext.tools.handlers.management_handlers',
     'codegraphcontext.tools.handlers.query_handlers',
     'codegraphcontext.tools.handlers.watcher_handlers',
-    # utils
     'codegraphcontext.utils.debug_log',
     'codegraphcontext.utils.tree_sitter_manager',
     'codegraphcontext.utils.visualize_graph',
 
-    # ── Third-party ──
     'kuzu',
     'falkordb',
     'redislite',
@@ -196,8 +195,6 @@ hidden_imports = [
     'tree_sitter_c_sharp',
     'watchdog',
     'watchdog.observers',
-    'watchdog.observers.inotify',
-    'watchdog.observers.inotify_buffer',
     'watchdog.events',
     'mcp',
     'stdlibs',
@@ -222,13 +219,19 @@ hidden_imports = [
     'atexit',
 ]
 
+# Add platform-specific watchers
+if is_win:
+    hidden_imports.append('watchdog.observers.read_directory_changes')
+elif is_linux:
+    hidden_imports.append('watchdog.observers.inotify')
+    hidden_imports.append('watchdog.observers.inotify_buffer')
+elif is_mac:
+    hidden_imports.append('watchdog.observers.fsevents')
+
 # ── 4. Analysis ──────────────────────────────────────────────────────────────
 a = Analysis(
     ['cgc_entry.py'],
-    pathex=[
-        'src',
-        str(site_packages),
-    ],
+    pathex=['src'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hidden_imports,
@@ -236,12 +239,9 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'tkinter', '_tkinter',
-        'matplotlib', 'numpy', 'pandas', 'scipy',
-        'PIL', 'cv2', 'torch', 'tensorflow',
-        'jupyter', 'notebook', 'IPython',
-        'pydoc', 'doctest', 'xmlrpc', 'lib2to3',
-        'test', 'unittest.mock',
+        'tkinter', '_tkinter', 'matplotlib', 'numpy', 'pandas', 'scipy',
+        'PIL', 'cv2', 'torch', 'tensorflow', 'jupyter', 'notebook', 'IPython',
+        'pydoc', 'doctest', 'xmlrpc', 'lib2to3', 'test', 'unittest.mock',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -262,11 +262,11 @@ exe = EXE(
     name='cgc',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,        # Strip debug symbols → smaller binary
-    upx=False,         # Set True if UPX is installed for extra compression
+    strip=not is_win,  # strip fails on windows often
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,      # CLI app — keep console mode
+    console=True,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
