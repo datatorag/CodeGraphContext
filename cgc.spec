@@ -28,74 +28,9 @@ else:
 print(f"Detected Platform: {sys.platform}")
 print(f"Using site-packages: {site_packages}")
 
-# ── 1. Binary files to bundle (.so, .pyd, .dylib) ───────────────────────────
+# ── 1. Component Lists (Binaries, Datas, Hidden Imports) ───────────────────
 binaries = []
-
-# Bin extensions by platform
-ext = '*.so'
-if is_win:
-    ext = '*.pyd'
-elif is_mac:
-    ext = '*.dylib'
-
-def add_binary(package_path, pattern, target_subdir=None):
-    pkg_dir = site_packages / package_path
-    if pkg_dir.exists():
-        for f in pkg_dir.glob(pattern):
-            binaries.append((str(f), target_subdir or package_path))
-
-# tree-sitter core
-add_binary('tree_sitter', ext)
-
-# tree-sitter-language-pack: ALL language bindings
-add_binary('tree_sitter_language_pack/bindings', ext)
-
-# other tree-sitter bindings
-add_binary('tree_sitter_yaml', ext)
-add_binary('tree_sitter_embedded_template', ext)
-add_binary('tree_sitter_c_sharp', ext)
-
-# KùzuDB native extension
-add_binary('kuzu', ext)
-
-# ── 2. Data files ────────────────────────────────────────────────────────────
 datas = []
-
-# Tricky packages collection (redislite, falkordb)
-if not is_win:
-    for pkg in ['redislite', 'falkordb']:
-        t_datas, t_binaries, t_hiddenimports = collect_all(pkg)
-        datas += t_datas
-        binaries += t_binaries
-        hidden_imports += t_hiddenimports
-    
-    # Specific additions for falkordblite
-    add_binary('falkordblite.scripts', ext)
-    add_binary('falkordblite.libs', '*')
-
-# stdlibs: dynamically imports py3.py, py312.py, etc. via importlib
-stdlibs_dir = site_packages / 'stdlibs'
-if stdlibs_dir.exists():
-    for f in stdlibs_dir.glob('*.py'):
-        datas.append((str(f), 'stdlibs'))
-
-# mcp package data
-datas += collect_data_files('mcp', includes=['**/*'])
-
-# mcp.json shipped with CGC
-mcp_json = Path('src/codegraphcontext/mcp.json')
-if mcp_json.exists():
-    datas.append((str(mcp_json), 'codegraphcontext'))
-
-# tree-sitter-language-pack metadata
-ts_pack_dir = site_packages / 'tree_sitter_language_pack'
-if ts_pack_dir.exists():
-    for f in ts_pack_dir.glob('*.py'):
-        datas.append((str(f), 'tree_sitter_language_pack'))
-    for f in ts_pack_dir.glob('*.pyi'):
-        datas.append((str(f), 'tree_sitter_language_pack'))
-
-# ── 3. Hidden imports ────────────────────────────────────────────────────────
 hidden_imports = [
     'codegraphcontext',
     'codegraphcontext.cli',
@@ -190,34 +125,88 @@ hidden_imports = [
     'rich.panel',
     'tree_sitter',
     'tree_sitter_language_pack',
-    'tree_sitter_yaml',
-    'tree_sitter_embedded_template',
-    'tree_sitter_c_sharp',
     'watchdog',
     'watchdog.observers',
     'watchdog.events',
-    'mcp',
-    'stdlibs',
-    'stdlibs.py3',
-    'stdlibs.py312',
-    'stdlibs.known',
     'anyio',
-    'anyio._backends._asyncio',
     'click',
     'shellingham',
     'httpx',
     'httpcore',
-    'importlib.metadata',
-    'importlib.util',
+    'importlib',
     'asyncio',
-    'json',
-    're',
-    'pathlib',
+    'pkg_resources',
     'threading',
     'subprocess',
     'socket',
     'atexit',
 ]
+
+
+# Bin extensions by platform
+ext = '*.so'
+if is_win:
+    ext = '*.pyd'
+elif is_mac:
+    ext = '*.dylib'
+
+def add_binary(package_path, pattern, target_subdir=None):
+    pkg_dir = site_packages / package_path
+    if pkg_dir.exists():
+        for f in pkg_dir.glob(pattern):
+            binaries.append((str(f), target_subdir or package_path))
+
+# tree-sitter core
+add_binary('tree_sitter', ext)
+
+# tree-sitter-language-pack: ALL language bindings
+add_binary('tree_sitter_language_pack/bindings', ext)
+
+# other tree-sitter bindings
+add_binary('tree_sitter_yaml', ext)
+add_binary('tree_sitter_embedded_template', ext)
+add_binary('tree_sitter_c_sharp', ext)
+
+# KùzuDB native extension
+add_binary('kuzu', ext)
+
+# ── 2. Bundle Logic ──────────────────────────────────────────────────────────
+
+# Tricky packages collection (redislite, falkordb)
+if not is_win:
+    for pkg in ['redislite', 'falkordb']:
+        t_datas, t_binaries, t_hiddenimports = collect_all(pkg)
+        datas += t_datas
+        binaries += t_binaries
+        hidden_imports += t_hiddenimports
+    
+    # Specific additions for falkordblite
+    add_binary('falkordblite.scripts', ext)
+    add_binary('falkordblite.libs', '*')
+
+# stdlibs: dynamically imports py3.py, py312.py, etc. via importlib
+stdlibs_dir = site_packages / 'stdlibs'
+if stdlibs_dir.exists():
+    for f in stdlibs_dir.glob('*.py'):
+        datas.append((str(f), 'stdlibs'))
+
+# mcp package data
+datas += collect_data_files('mcp', includes=['**/*'])
+
+# mcp.json shipped with CGC
+mcp_json = Path('src/codegraphcontext/mcp.json')
+if mcp_json.exists():
+    datas.append((str(mcp_json), 'codegraphcontext'))
+
+# tree-sitter-language-pack metadata
+ts_pack_dir = site_packages / 'tree_sitter_language_pack'
+if ts_pack_dir.exists():
+    for f in ts_pack_dir.glob('*.py'):
+        datas.append((str(f), 'tree_sitter_language_pack'))
+    for f in ts_pack_dir.glob('*.pyi'):
+        datas.append((str(f), 'tree_sitter_language_pack'))
+
+# ── 3. Final Adjustments ────────────────────────────────────────────────────
 
 # Add redislite submodules to hidden imports
 hidden_imports += collect_submodules('redislite')
