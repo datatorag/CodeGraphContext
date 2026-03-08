@@ -138,8 +138,10 @@ class KuzuDBManager:
 
     def close_driver(self):
         """Closes the connection."""
-        self._conn = None
-        self._db = None
+        if self._conn is not None:
+            info_logger("Closing KùzuDB connection")
+            self._conn = None
+            self._db = None
 
     def is_connected(self) -> bool:
         """Checks if the database connection is currently active."""

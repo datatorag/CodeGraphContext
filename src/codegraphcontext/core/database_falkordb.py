@@ -217,8 +217,10 @@ class FalkorDBManager:
 
     def close_driver(self):
         """Closes the connection."""
-        self._driver = None
-        self._graph = None
+        if self._driver is not None:
+            info_logger("Closing FalkorDB Lite connection")
+            self._driver = None
+            self._graph = None
 
     def shutdown(self):
         """Kills the subprocess on exit."""

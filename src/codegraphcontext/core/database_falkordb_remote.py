@@ -114,8 +114,10 @@ class FalkorDBRemoteManager:
 
     def close_driver(self):
         """Closes the connection."""
-        self._driver = None
-        self._graph = None
+        if self._driver is not None:
+            info_logger("Closing FalkorDB Remote connection")
+            self._driver = None
+            self._graph = None
 
     def shutdown(self):
         """Clean up on exit. No subprocess to kill for remote connections."""

@@ -229,6 +229,13 @@ def _load_credentials():
     from dotenv import dotenv_values
     from codegraphcontext.cli.config_manager import ensure_config_dir
     
+    # Capture DATABASE_TYPE from actual shell env BEFORE we load .env files.
+    # If the user ran `DATABASE_TYPE=falkordb cgc …` we must not let
+    # DEFAULT_DATABASE=neo4j in .env steal priority later.
+    shell_db_type = os.environ.get('DATABASE_TYPE')
+    if shell_db_type and not os.environ.get('CGC_RUNTIME_DB_TYPE'):
+        os.environ['CGC_RUNTIME_DB_TYPE'] = shell_db_type
+
     # Ensure config directory exists (lazy initialization)
     ensure_config_dir()
     
@@ -272,9 +279,16 @@ def _load_credentials():
     for config in config_sources:
         merged_config.update(config)
     
-    # Apply merged config to environment
+    # Apply merged config to environment.
+    # IMPORTANT: DB-selection keys set in the shell must win over .env defaults.
+    # E.g. `DATABASE_TYPE=falkordb cgc index …` must not be overridden by
+    # DEFAULT_DATABASE=neo4j sitting in ~/.codegraphcontext/.env
+    DB_OVERRIDE_KEYS = {"DATABASE_TYPE", "CGC_RUNTIME_DB_TYPE", "DEFAULT_DATABASE"}
     for key, value in merged_config.items():
         if value is not None:  # Only set non-None values
+            # Never let .env clobber a DB-type key that the user already set in the shell
+            if key in DB_OVERRIDE_KEYS and key in os.environ:
+                continue
             os.environ[key] = str(value)
     
     # Report what was loaded
