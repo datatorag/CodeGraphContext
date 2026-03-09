@@ -33,7 +33,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [illustratedPath, setIllustratedPath] = useState<string | null>(null);
   const [selectedNodeLabel, setSelectedNodeLabel] = useState<string | null>(null);
-  const [isRemoteMode, setIsRemoteMode] = useState(false);
+  const [isRemoteMode, setIsRemoteMode] = useState(true);
   const [repoUrl, setRepoUrl] = useState('');
   const [repoToken, setRepoToken] = useState('');
   const [explorerWidth, setExplorerWidth] = useState(260);
