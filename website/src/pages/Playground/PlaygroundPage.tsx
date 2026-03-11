@@ -23,6 +23,8 @@ const NODE_TYPE_COLORS: Record<string, string> = {
   default:    '#6b7280',
 };
 
+const MOBILE_BREAKPOINT = 768;
+
 function App() {
   const [loading, setLoading] = useState(false);
   const [progressMsg, setProgressMsg] = useState('');
@@ -37,7 +39,12 @@ function App() {
   const [repoUrl, setRepoUrl] = useState('');
   const [repoToken, setRepoToken] = useState('');
   const [explorerWidth, setExplorerWidth] = useState(260);
-  const [isExplorerCollapsed, setIsExplorerCollapsed] = useState(false);
+  const [isMobileView, setIsMobileView] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < MOBILE_BREAKPOINT : false,
+  );
+  const [isExplorerCollapsed, setIsExplorerCollapsed] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < MOBILE_BREAKPOINT : false,
+  );
   const [isResizing, setIsResizing] = useState(false);
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
   const [customNodeColors, setCustomNodeColors] = useState<Record<string, string>>({});
@@ -53,6 +60,22 @@ function App() {
   const [searchParams, setSearchParams] = useSearchParams();
   const actionProcessedRef = useRef(false);
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
+    const onChange = (event: MediaQueryListEvent) => setIsMobileView(event.matches);
+
+    setIsMobileView(mediaQuery.matches);
+    mediaQuery.addEventListener('change', onChange);
+
+    return () => mediaQuery.removeEventListener('change', onChange);
+  }, []);
+
+  useEffect(() => {
+    if (isMobileView) {
+      setIsExplorerCollapsed(true);
+    }
+  }, [isMobileView]);
  
   const performRemoteFetch = useCallback(async (url: string, token?: string) => {
     if (!url.trim()) return;
@@ -272,7 +295,12 @@ function App() {
 
         {/* Left: logo + project badge */}
         <div className="flex min-w-0 items-center gap-4">
-          <button className="md:hidden p-1.5 -ml-1 text-text-muted hover:text-white transition-colors">
+          <button
+            onClick={() => graphData && setIsExplorerCollapsed(prev => !prev)}
+            className={`md:hidden p-1.5 -ml-1 text-text-muted transition-colors ${graphData ? 'hover:text-white' : 'cursor-not-allowed opacity-40'}`}
+            disabled={!graphData}
+            aria-label="Toggle explorer"
+          >
             <Menu className="w-5 h-5" />
           </button>
           <RouterLink to="/" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
@@ -519,7 +547,7 @@ function App() {
                   {/* Resize Handle */}
                   <div 
                     onMouseDown={startResizing}
-                    className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-accent/40 active:bg-accent transition-colors z-20"
+                    className="absolute top-0 right-0 z-20 hidden h-full w-1 cursor-col-resize transition-colors hover:bg-accent/40 active:bg-accent md:block"
                   />
                 </div>
               ) : (
@@ -575,26 +603,26 @@ function App() {
                     <div className="space-y-4">
                     <div>
                       <p className="text-[10px] uppercase tracking-widest text-[#8888a0] mb-2 font-semibold">Nodes</p>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                         {['folder', 'file', 'class', 'function', 'interface', 'method', 'struct', 'enum', 'namespace', 'module'].map(type => {
                           const isActive = visibleNodeTypes.has(type);
                           const color = customNodeColors[type] || NODE_TYPE_COLORS[type] || '#6b7280';
                           return (
-                            <div key={type} className="group relative flex items-center gap-1">
+                            <div key={type} className="group relative flex min-w-0 items-center gap-1">
                               <button
                                 onClick={() => {
                                   const next = new Set(visibleNodeTypes);
                                   if (isActive) next.delete(type); else next.add(type);
                                   setVisibleNodeTypes(next);
                                 }}
-                                className={`flex-1 flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-all border
+                                className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-all border
                                   ${isActive 
                                     ? 'bg-accent/20 border-accent/40 text-text-primary' 
                                     : 'bg-void border-transparent text-text-muted hover:border-[#2a2a3a] hover:text-text-secondary'}`}
                               >
                                 <div className="w-1.5 h-1.5 rounded-full shrink-0" 
                                   style={{ backgroundColor: color }} />
-                                <span className="capitalize">{type}</span>
+                                <span className="capitalize truncate">{type}</span>
                               </button>
                               <div className="relative flex items-center">
                                 <label className="cursor-pointer p-1 rounded hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -615,26 +643,26 @@ function App() {
 
                       <div>
                         <p className="text-[10px] uppercase tracking-widest text-[#8888a0] mb-2 font-semibold">Edges</p>
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                           {['contains', 'defines', 'imports', 'calls', 'inherits', 'implements', 'extends'].map(type => {
                             const isActive = visibleEdgeTypes.has(type);
                             const edgeColor = customEdgeColors[type] || EDGE_STYLES[type]?.color || '#7c3aed';
                             return (
-                              <div key={type} className="group relative flex items-center gap-1">
+                              <div key={type} className="group relative flex min-w-0 items-center gap-1">
                                 <button
                                   onClick={() => {
                                     const next = new Set(visibleEdgeTypes);
                                     if (isActive) next.delete(type); else next.add(type);
                                     setVisibleEdgeTypes(next);
                                   }}
-                                  className={`flex-1 flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-all border
+                                  className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-all border
                                     ${isActive 
                                       ? 'bg-accent/20 border-accent/40 text-text-primary' 
                                       : 'bg-void border-transparent text-text-muted hover:border-[#2a2a3a] hover:text-text-secondary'}`}
                                 >
                                   <div className="w-3 h-0.5 rounded-full shrink-0" 
                                     style={{ backgroundColor: edgeColor }} />
-                                  <span className="capitalize">{type}</span>
+                                  <span className="capitalize truncate">{type}</span>
                                 </button>
                                 <div className="relative flex items-center">
                                   <label className="cursor-pointer p-1 rounded hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity">

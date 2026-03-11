@@ -9,7 +9,7 @@
       "destination": "/api/proxy"
     },
     {
-      "source": "/(.*)",
+      "source": "/((?!api/|@vite/|@react-refresh|src/|node_modules/|.*\\..*).*)",
       "destination": "/index.html"
     }
   ]
