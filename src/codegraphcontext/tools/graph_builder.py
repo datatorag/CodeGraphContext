@@ -388,237 +388,208 @@ class GraphBuilder:
             )
 
     # First pass to add file and its contents
-    def add_file_to_graph(self, file_data: Dict, repo_name: str, imports_map: dict):
-        calls_count = len(file_data.get('function_calls', []))
-        debug_log(f"Executing add_file_to_graph for {file_data.get('path', 'unknown')} - Calls found: {calls_count}")
-        """Adds a file and its contents within a single, unified session."""
+    def add_file_to_graph(self, file_data: Dict, repo_name: str, imports_map: dict, repo_path_str: str = None):
+        """Adds a file and its contents using batched UNWIND queries (one round-trip per node type)."""
         file_path_str = str(Path(file_data['path']).resolve())
         file_name = Path(file_path_str).name
         is_dependency = file_data.get('is_dependency', False)
+        lang = file_data.get('lang')
 
         with self.driver.session() as session:
+            # Resolve repo path — use caller-supplied value when available to skip a DB round-trip.
+            if repo_path_str:
+                resolved_repo_str = repo_path_str
+            else:
+                repo_result = session.run(
+                    "MATCH (r:Repository {path: $repo_path}) RETURN r.path as path",
+                    repo_path=str(Path(file_data['repo_path']).resolve())
+                ).single()
+                resolved_repo_str = repo_result['path'] if repo_result else str(Path(file_data['repo_path']).resolve())
+                if not repo_result:
+                    warning_logger(f"Repository node not found for {file_data['repo_path']} during indexing of {file_name}.")
+
             try:
-                # Match repository by path, not name, to avoid conflicts with same-named folders at different locations
-                repo_result = session.run("MATCH (r:Repository {path: $repo_path}) RETURN r.path as path", repo_path=str(Path(file_data['repo_path']).resolve())).single()
-                relative_path = str(Path(file_path_str).relative_to(Path(repo_result['path']))) if repo_result else file_name
+                relative_path = str(Path(file_path_str).relative_to(Path(resolved_repo_str)))
             except ValueError:
                 relative_path = file_name
 
+            # ── UPSERT File node ─────────────────────────────────────────────
             session.run("""
                 MERGE (f:File {path: $path})
                 SET f.name = $name, f.relative_path = $relative_path, f.is_dependency = $is_dependency
             """, path=file_path_str, name=file_name, relative_path=relative_path, is_dependency=is_dependency)
 
+            # ── Directory hierarchy + file link (one pass, sequential MERGEs) ─
             file_path_obj = Path(file_path_str)
-            if repo_result:
-                repo_path_obj = Path(repo_result['path'])
-            else:
-                # Fallback to the path we queried for
-                warning_logger(f"Repository node not found for {file_data['repo_path']} during indexing of {file_name}. Using original path.")
-                repo_path_obj = Path(file_data['repo_path']).resolve()
-            
+            repo_path_obj = Path(resolved_repo_str)
             relative_path_to_file = file_path_obj.relative_to(repo_path_obj)
-            
-            parent_path = str(repo_path_obj)
+            parent_path = resolved_repo_str
             parent_label = 'Repository'
-
             for part in relative_path_to_file.parts[:-1]:
-                current_path = Path(parent_path) / part
-                current_path_str = str(current_path)
-                
+                current_path_str = str(Path(parent_path) / part)
                 session.run(f"""
                     MATCH (p:{parent_label} {{path: $parent_path}})
                     MERGE (d:Directory {{path: $current_path}})
                     SET d.name = $part
                     MERGE (p)-[:CONTAINS]->(d)
                 """, parent_path=parent_path, current_path=current_path_str, part=part)
-
                 parent_path = current_path_str
                 parent_label = 'Directory'
-
             session.run(f"""
                 MATCH (p:{parent_label} {{path: $parent_path}})
                 MATCH (f:File {{path: $path}})
                 MERGE (p)-[:CONTAINS]->(f)
             """, parent_path=parent_path, path=file_path_str)
 
-            # CONTAINS relationships for functions, classes, and variables
+            # ── Batch UPSERT all code nodes (functions, classes, etc.) ────────
             # To add a new language-specific node type (e.g., 'Trait' for Rust):
-            # 1. Ensure your language-specific parser returns a list under a unique key (e.g., 'traits': [...] ).
-            # 2. Add a new constraint for the new label in the `create_schema` method.
-            # 3. Add a new entry to the `item_mappings` list below (e.g., (file_data.get('traits', []), 'Trait') ).
+            # 1. Parser returns a list under a unique key (e.g., 'traits': [...]).
+            # 2. Add a constraint for the label in create_schema().
+            # 3. Add an entry to item_mappings below.
             item_mappings = [
-                (file_data.get('functions', []), 'Function'),
-                (file_data.get('classes', []), 'Class'),
-                (file_data.get('traits', []), 'Trait'), # <-- Added trait mapping
-                (file_data.get('variables', []), 'Variable'),
+                (file_data.get('functions', []),  'Function'),
+                (file_data.get('classes', []),    'Class'),
+                (file_data.get('traits', []),     'Trait'),
+                (file_data.get('variables', []),  'Variable'),
                 (file_data.get('interfaces', []), 'Interface'),
-                (file_data.get('macros', []), 'Macro'),
-                (file_data.get('structs',[]), 'Struct'),
-                (file_data.get('enums',[]), 'Enum'),
-                (file_data.get('unions',[]), 'Union'),
-                (file_data.get('records',[]), 'Record'),
-                (file_data.get('properties',[]), 'Property'),
+                (file_data.get('macros', []),     'Macro'),
+                (file_data.get('structs', []),    'Struct'),
+                (file_data.get('enums', []),      'Enum'),
+                (file_data.get('unions', []),     'Union'),
+                (file_data.get('records', []),    'Record'),
+                (file_data.get('properties', []), 'Property'),
             ]
-            for item_data, label in item_mappings:
-                for item in item_data:
-                    # Ensure cyclomatic_complexity is set for functions
-                    if label == 'Function' and 'cyclomatic_complexity' not in item:
-                        item['cyclomatic_complexity'] = 1 # Default value
+            params_batch = []  # accumulated for bulk parameter creation
+            class_fn_batch = []  # accumulated for class->function CONTAINS links
+            nested_fn_batch = []  # accumulated for function->function CONTAINS links
 
-                    query = f"""
-                        MATCH (f:File {{path: $path}})
-                        MERGE (n:{label} {{name: $name, path: $path, line_number: $line_number}})
-                        SET n += $props
-                        MERGE (f)-[:CONTAINS]->(n)
-                    """
-
-                    # Strip non-primitive fields (dicts, tuples, lists-of-dicts)
-                    # before writing to the database to avoid runtime errors such as
-                    # "Property values can only be of primitive types or arrays of
-                    # primitive types" raised by FalkorDB / KùzuDB.
-                    # _sanitize_props also truncates long strings to avoid Neo4j's
-                    # 8 kB RANGE-index limit (seen with long C++ template names).
-                    safe_props = self._sanitize_props(item)
-                    try:
-                        session.run(query, path=file_path_str, name=item['name'], line_number=item['line_number'], props=safe_props)
-                    except Exception as node_err:
-                        err_str = str(node_err)
-                        if "too large to index" in err_str or "property size" in err_str.lower():
-                            warning_logger(
-                                f"Skipping {label} '{item['name']}' in {file_path_str}: "
-                                f"property value too large for index (name length={len(item['name'])})"
-                            )
-                        else:
-                            raise  # Re-raise unexpected errors
-                    
+            for item_list, label in item_mappings:
+                if not item_list:
+                    continue
+                batch = []
+                for item in item_list:
+                    row = dict(item)  # shallow copy so we can set defaults safely
+                    if label == 'Function' and 'cyclomatic_complexity' not in row:
+                        row['cyclomatic_complexity'] = 1
+                    batch.append(row)
                     if label == 'Function':
                         for arg_name in item.get('args', []):
-                            session.run("""
-                                MATCH (fn:Function {name: $func_name, path: $path, line_number: $line_number})
-                                MERGE (p:Parameter {name: $arg_name, path: $path, function_line_number: $line_number})
-                                MERGE (fn)-[:HAS_PARAMETER]->(p)
-                            """, func_name=item['name'], path=file_path_str, line_number=item['line_number'], arg_name=arg_name)
+                            params_batch.append({
+                                'func_name': item['name'],
+                                'line_number': item['line_number'],
+                                'arg_name': arg_name,
+                            })
+                        if item.get('class_context'):
+                            class_fn_batch.append({
+                                'class_name': item['class_context'],
+                                'func_name': item['name'],
+                                'func_line': item['line_number'],
+                            })
+                        if item.get('context_type') == 'function_definition':
+                            nested_fn_batch.append({
+                                'outer': item['context'],
+                                'inner_name': item['name'],
+                                'inner_line': item['line_number'],
+                            })
 
-            # --- NEW: persist Ruby Modules ---
-            for m in file_data.get('modules', []):
+                # One UNWIND per label — replaces N individual session.run() calls
+                session.run(f"""
+                    UNWIND $batch AS row
+                    MATCH (f:File {{path: $file_path}})
+                    MERGE (n:{label} {{name: row.name, path: $file_path, line_number: row.line_number}})
+                    SET n += row
+                    MERGE (f)-[:CONTAINS]->(n)
+                """, batch=batch, file_path=file_path_str)
+
+            # ── Batch: Function parameters ────────────────────────────────────
+            if params_batch:
                 session.run("""
-                    MERGE (mod:Module {name: $name})
-                    ON CREATE SET mod.lang = $lang
-                    ON MATCH  SET mod.lang = coalesce(mod.lang, $lang)
-                """, name=m["name"], lang=file_data.get("lang"))
+                    UNWIND $batch AS row
+                    MATCH (fn:Function {name: row.func_name, path: $file_path, line_number: row.line_number})
+                    MERGE (p:Parameter {name: row.arg_name, path: $file_path, function_line_number: row.line_number})
+                    MERGE (fn)-[:HAS_PARAMETER]->(p)
+                """, batch=params_batch, file_path=file_path_str)
 
-            # Create CONTAINS relationships for nested functions
-            for item in file_data.get('functions', []):
-                if item.get("context_type") == "function_definition":
-                    session.run("""
-                        MATCH (outer:Function {name: $context, path: $path})
-                        MATCH (inner:Function {name: $name, path: $path, line_number: $line_number})
-                        MERGE (outer)-[:CONTAINS]->(inner)
-                    """, context=item["context"], path=file_path_str, name=item["name"], line_number=item["line_number"])
+            # ── Batch: Class -[:CONTAINS]-> Function ──────────────────────────
+            if class_fn_batch:
+                session.run("""
+                    UNWIND $batch AS row
+                    MATCH (c:Class {name: row.class_name, path: $file_path})
+                    MATCH (fn:Function {name: row.func_name, path: $file_path, line_number: row.func_line})
+                    MERGE (c)-[:CONTAINS]->(fn)
+                """, batch=class_fn_batch, file_path=file_path_str)
 
-            # Handle imports and create IMPORTS relationships
+            # ── Batch: Nested Function -[:CONTAINS]-> Function ────────────────
+            if nested_fn_batch:
+                session.run("""
+                    UNWIND $batch AS row
+                    MATCH (outer:Function {name: row.outer, path: $file_path})
+                    MATCH (inner:Function {name: row.inner_name, path: $file_path, line_number: row.inner_line})
+                    MERGE (outer)-[:CONTAINS]->(inner)
+                """, batch=nested_fn_batch, file_path=file_path_str)
+
+            # ── Batch: Ruby Modules ───────────────────────────────────────────
+            ruby_modules = file_data.get('modules', [])
+            if ruby_modules:
+                session.run("""
+                    UNWIND $batch AS row
+                    MERGE (mod:Module {name: row.name})
+                    ON CREATE SET mod.lang = row.lang
+                    ON MATCH  SET mod.lang = coalesce(mod.lang, row.lang)
+                """, batch=[{'name': m['name'], 'lang': lang} for m in ruby_modules])
+
+            # ── Batch: Imports → Module nodes + IMPORTS relationships ─────────
+            js_imports = []
+            other_imports = []
             for imp in file_data.get('imports', []):
-                info_logger(f"Processing import: {imp}")
-                lang = file_data.get('lang')
                 if lang == 'javascript':
-                    # New, correct logic for JS
                     module_name = imp.get('source')
-                    if not module_name: continue
-
-                    # Use a map for relationship properties to handle optional alias and line_number
-                    rel_props = {'imported_name': imp.get('name', '*')}
-                    if imp.get('alias'):
-                        rel_props['alias'] = imp.get('alias')
-                    if imp.get('line_number'):
-                        rel_props['line_number'] = imp.get('line_number')
-
-                    session.run("""
-                        MATCH (f:File {path: $path})
-                        MERGE (m:Module {name: $module_name})
-                        MERGE (f)-[r:IMPORTS]->(m)
-                        SET r += $props
-                    """, path=file_path_str, module_name=module_name, props=rel_props)
-                else:
-                    # Existing logic for Python (and other languages)
-                    # For KùzuDB, Module schema only has: name, lang, full_import_name.
-                    # 'alias' belongs on the relationship.
-                    
-                    set_clauses = []
-                    if 'full_import_name' in imp:
-                        set_clauses.append("m.full_import_name = $full_import_name")
-                    
-                    set_clause_str = ("SET " + ", ".join(set_clauses)) if set_clauses else ""
-
-                    # Build relationship properties
-                    rel_props = {}
-                    if imp.get('line_number'):
-                        rel_props['line_number'] = imp.get('line_number')
-                    if imp.get('alias'):
-                        rel_props['alias'] = imp.get('alias')
-                    
-                    # Ensure full_import_name is available in params for SET clause
-                    params = imp.copy()
-                    params['path'] = file_path_str
-                    params['module_name'] = imp.get('name') # Use 'name' from imp as module name
-
-                    # Sanitize scalar params but keep rel_props as a dict
-                    # (FalkorDB SET r += $rel_props requires a map, not a string)
-                    sanitized = self._sanitize_props(params)
-                    sanitized['rel_props'] = rel_props
-
-                    session.run(f"""
-                        MATCH (f:File {{path: $path}})
-                        MERGE (m:Module {{name: $module_name}})
-                        {set_clause_str}
-                        MERGE (f)-[r:IMPORTS]->(m)
-                        SET r += $rel_props
-                    """, **sanitized)
-
-
-            # Handle CONTAINS relationship between class to their children like variables
-            for func in file_data.get('functions', []):
-                if func.get('class_context'):
-                    # Try same-file match first (Python, JS, etc.)
-                    if not self._safe_run_create(session, """
-                        MATCH (c:Class {name: $class_name, path: $path})
-                        MATCH (fn:Function {name: $func_name, path: $path, line_number: $func_line})
-                        MERGE (c)-[:CONTAINS]->(fn)
-                        RETURN count(*) as created
-                    """, {
-                        'class_name': func['class_context'],
-                        'path': file_path_str,
-                        'func_name': func['name'],
-                        'func_line': func['line_number']
-                    }):
-                        # Cross-file match for C/C++ where class is in .h and method in .cpp.
-                        # Note: matches by class name only (no path constraint), so classes
-                        # with identical names in different files could get false links.
-                        self._safe_run_create(session, """
-                            MATCH (c:Class {name: $class_name})
-                            MATCH (fn:Function {name: $func_name, path: $path, line_number: $func_line})
-                            MERGE (c)-[:CONTAINS]->(fn)
-                            RETURN count(*) as created
-                        """, {
-                            'class_name': func['class_context'],
-                            'path': file_path_str,
-                            'func_name': func['name'],
-                            'func_line': func['line_number']
+                    if module_name:
+                        js_imports.append({
+                            'module_name': module_name,
+                            'imported_name': imp.get('name', '*'),
+                            'alias': imp.get('alias'),
+                            'line_number': imp.get('line_number'),
                         })
+                else:
+                    other_imports.append(imp)
 
-            # --- NEW: Class INCLUDES Module (Ruby mixins) ---
-            for inc in file_data.get('module_inclusions', []):
+            if js_imports:
                 session.run("""
-                    MATCH (c:Class {name: $class_name, path: $path})
-                    MERGE (m:Module {name: $module_name})
-                    MERGE (c)-[:INCLUDES]->(m)
-                """,
-                class_name=inc["class"],
-                path=file_path_str,
-                module_name=inc["module"])
+                    UNWIND $batch AS row
+                    MATCH (f:File {path: $file_path})
+                    MERGE (m:Module {name: row.module_name})
+                    MERGE (f)-[r:IMPORTS]->(m)
+                    SET r.imported_name = row.imported_name,
+                        r.alias = row.alias,
+                        r.line_number = row.line_number
+                """, batch=js_imports, file_path=file_path_str)
 
-            # Class inheritance is handled in a separate pass after all files are processed.
-            # Function calls are also handled in a separate pass after all files are processed.
+            if other_imports:
+                # Non-JS languages share the same shape: name, alias, full_import_name
+                session.run("""
+                    UNWIND $batch AS row
+                    MATCH (f:File {path: $file_path})
+                    MERGE (m:Module {name: row.name})
+                    SET m.alias = row.alias,
+                        m.full_import_name = coalesce(row.full_import_name, m.full_import_name)
+                    MERGE (f)-[r:IMPORTS]->(m)
+                    SET r.line_number = row.line_number,
+                        r.alias = row.alias
+                """, batch=other_imports, file_path=file_path_str)
+
+            # ── Batch: Ruby Class INCLUDES Module ─────────────────────────────
+            module_inclusions = file_data.get('module_inclusions', [])
+            if module_inclusions:
+                session.run("""
+                    UNWIND $batch AS row
+                    MATCH (c:Class {name: row.class_name, path: $file_path})
+                    MERGE (m:Module {name: row.module_name})
+                    MERGE (c)-[:INCLUDES]->(m)
+                """, batch=[{'class_name': i['class'], 'module_name': i['module']} for i in module_inclusions],
+                     file_path=file_path_str)
+
+            # Class inheritance and function calls are handled in a second pass after all files are processed.
 
     # Second pass to create relationships that depend on all files being present like call functions and class inheritance
     def _resolve_function_call(self, call: Dict, caller_file_path: str, local_names: set, local_imports: dict, imports_map: dict, skip_external: bool) -> Optional[Dict]:
@@ -1534,6 +1505,10 @@ class GraphBuilder:
 
             all_file_data = []
 
+            # Resolve repo path string once here — passed into add_file_to_graph to
+            # skip a DB round-trip per file (was one MATCH query per file before).
+            resolved_repo_path_str = str(path.resolve()) if path.is_dir() else str(path.parent.resolve())
+
             processed_count = 0
             for file in files:
                 if file.is_file():
@@ -1545,14 +1520,7 @@ class GraphBuilder:
                     # Updated to include all files so that unsupported file types
                     # can still be represented as minimal File nodes in the graph.
                     if "error" not in file_data:
-                        try:
-                            self.add_file_to_graph(file_data, repo_name, imports_map)
-                        except Exception as file_err:
-                            # Re-raise with the offending file path so the user
-                            # can identify which source file triggered the error.
-                            raise RuntimeError(
-                                f"{file_err} (while indexing file: {file})"
-                            ) from file_err
+                        self.add_file_to_graph(file_data, repo_name, imports_map, repo_path_str=resolved_repo_path_str)
                         all_file_data.append(file_data)
 
                     # Previously only files with supported extensions were indexed.
@@ -1565,7 +1533,10 @@ class GraphBuilder:
 
                     if job_id:
                         self.job_manager.update_job(job_id, processed_files=processed_count)
-                    await asyncio.sleep(0.01)
+                    # Yield to event loop every 50 files instead of every file.
+                    # Old: 28,600 files × 10ms = ~286s of dead wait for nucleus.
+                    if processed_count % 50 == 0:
+                        await asyncio.sleep(0)
 
             info_logger(f"File processing complete. {len(all_file_data)} files parsed. "
                        f"Starting post-processing phase (inheritance + function calls)...")
