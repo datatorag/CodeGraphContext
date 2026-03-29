@@ -194,6 +194,38 @@ class GraphBuilder:
             except Exception as e:
                 warning_logger(f"Schema creation warning: {e}")
 
+    @staticmethod
+    def _sanitize_props(props: Dict) -> Dict:
+        """Return a copy of *props* with all values coerced to database-safe types.
+
+        FalkorDB and KùzuDB only accept node properties that are primitives
+        (str, int, float, bool, None) or flat lists of primitives.  Complex
+        values such as tuples, dicts, or lists-of-dicts that come from language
+        parsers (e.g. C's ``detailed_args`` or Scala's tuple ``class_context``)
+        are serialized to a JSON string so the data is preserved rather than
+        being silently dropped.
+        """
+        import json
+
+        def _is_primitive(v):
+            return isinstance(v, (str, int, float, bool)) or v is None
+
+        def _is_flat_list(v):
+            return isinstance(v, list) and all(_is_primitive(item) for item in v)
+
+        def _coerce(v):
+            if _is_primitive(v):
+                return v
+            if _is_flat_list(v):
+                return v
+            # Tuples, dicts, lists-of-dicts, nested structures → JSON string
+            try:
+                return json.dumps(v, default=str)
+            except Exception:
+                return str(v)
+
+        return {k: _coerce(v) for k, v in props.items()}
+
 
     def _pre_scan_for_imports(self, files: list[Path]) -> dict:
         """Dispatches pre-scan to the correct language-specific implementation."""
@@ -394,7 +426,12 @@ class GraphBuilder:
                         MERGE (f)-[:CONTAINS]->(n)
                     """
 
-                    session.run(query, path=file_path_str, name=item['name'], line_number=item['line_number'], props=item)
+                    # Strip non-primitive fields (dicts, tuples, lists-of-dicts)
+                    # before writing to the database to avoid runtime errors such as
+                    # "Property values can only be of primitive types or arrays of
+                    # primitive types" raised by FalkorDB / KùzuDB.
+                    safe_props = self._sanitize_props(item)
+                    session.run(query, path=file_path_str, name=item['name'], line_number=item['line_number'], props=safe_props)
                     
                     if label == 'Function':
                         for arg_name in item.get('args', []):
@@ -1327,7 +1364,14 @@ class GraphBuilder:
                     # Updated to include all files so that unsupported file types
                     # can still be represented as minimal File nodes in the graph.
                     if "error" not in file_data:
-                        self.add_file_to_graph(file_data, repo_name, imports_map)
+                        try:
+                            self.add_file_to_graph(file_data, repo_name, imports_map)
+                        except Exception as file_err:
+                            # Re-raise with the offending file path so the user
+                            # can identify which source file triggered the error.
+                            raise RuntimeError(
+                                f"{file_err} (while indexing file: {file})"
+                            ) from file_err
                         all_file_data.append(file_data)
 
                     # Previously only files with supported extensions were indexed.
