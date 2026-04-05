@@ -22,7 +22,7 @@ class KuzuDBManager:
     _conn = None
     _lock = threading.Lock()
 
-    def __new__(cls):
+    def __new__(cls, *args, **kwargs):
         """Standard singleton pattern implementation."""
         if cls._instance is None:
             with cls._lock:
@@ -30,12 +30,14 @@ class KuzuDBManager:
                     cls._instance = super(KuzuDBManager, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, db_path: Optional[str] = None):
         """
-        Initializes the manager with default database path.
+        Initializes the manager with default database path or explicit overrides.
         """
-        if hasattr(self, '_initialized'):
+        if hasattr(self, '_initialized') and self.db_path == db_path:
             return
+            
+        self._initialized = False
 
         self.name = "kuzudb"
         # Try to load from config manager
@@ -45,10 +47,10 @@ class KuzuDBManager:
         except Exception:
             config_db_path = None
         
-        # Database path with fallback chain
-        self.db_path = os.getenv(
+        # Database path with fallback chain (Explicit > Env > Config/Default)
+        self.db_path = db_path or os.getenv(
             'KUZUDB_PATH',
-            config_db_path or str(Path.home() / '.codegraphcontext' / 'kuzudb')
+            config_db_path or str(Path.home() / '.codegraphcontext' / 'global' / 'kuzudb')
         )
         
         # Ensure directory exists
