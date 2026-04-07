@@ -1523,8 +1523,8 @@ class GraphBuilder:
             # Existing Tree-sitter pipeline (unchanged)
             # ------------------------------------------------------------------
             if job_id:
-                self.job_manager.update_job(job_id, status=JobStatus.RUNNING)
-            
+                self.job_manager.update_job(job_id, status=JobStatus.RUNNING, phase="parsing")
+
             self.add_repository_to_graph(path, is_dependency)
             repo_name = path.name
 
@@ -1590,8 +1590,8 @@ class GraphBuilder:
                         filtered_files.append(f)
                 files = filtered_files
             if job_id:
-                self.job_manager.update_job(job_id, total_files=len(files))
-            
+                self.job_manager.update_job(job_id, total_files=len(files), phase="parsing")
+
             debug_log("Starting pre-scan to build imports map...")
             imports_map = self._pre_scan_for_imports(files)
             debug_log(f"Pre-scan complete. Found {len(imports_map)} definitions.")
@@ -1602,50 +1602,60 @@ class GraphBuilder:
             # skip a DB round-trip per file (was one MATCH query per file before).
             resolved_repo_path_str = str(path.resolve()) if path.is_dir() else str(path.parent.resolve())
 
+            if job_id:
+                self.job_manager.update_job(job_id, phase="node_creation")
+
             processed_count = 0
+            nodes_created = 0
             for file in files:
                 if file.is_file():
                     if job_id:
                         self.job_manager.update_job(job_id, current_file=str(file))
                     repo_path = path.resolve() if path.is_dir() else file.parent.resolve()
-                    file_data = self.parse_file(repo_path, file, is_dependency)
-                    # Previously only files with supported extensions were indexed.
-                    # Updated to include all files so that unsupported file types
-                    # can still be represented as minimal File nodes in the graph.
-                    if "error" not in file_data:
-                        self.add_file_to_graph(file_data, repo_name, imports_map, repo_path_str=resolved_repo_path_str)
-                        all_file_data.append(file_data)
-
-                    # Previously only files with supported extensions were indexed.
-                    # Updated to include all files so that unsupported file types
-                    # can still be represented as minimal File nodes in the graph.
-                    else:
-                        # create minimal node if parser not available
-                        self.add_minimal_file_node(file, repo_path, is_dependency)
+                    try:
+                        file_data = self.parse_file(repo_path, file, is_dependency)
+                        if "error" not in file_data:
+                            self.add_file_to_graph(file_data, repo_name, imports_map, repo_path_str=resolved_repo_path_str)
+                            all_file_data.append(file_data)
+                            # Count nodes: 1 file + functions + classes
+                            nodes_created += 1 + len(file_data.get('functions', [])) + len(file_data.get('classes', []))
+                        else:
+                            self.add_minimal_file_node(file, repo_path, is_dependency)
+                            nodes_created += 1
+                    except Exception as file_err:
+                        if job_id:
+                            job = self.job_manager.get_job(job_id)
+                            if job:
+                                job.errors.append(f"{file}: {file_err}")
                     processed_count += 1
 
                     if job_id:
-                        self.job_manager.update_job(job_id, processed_files=processed_count)
-                    # Yield to event loop every 50 files instead of every file.
-                    # Old: 28,600 files × 10ms = ~286s of dead wait for nucleus.
+                        self.job_manager.update_job(
+                            job_id, processed_files=processed_count, nodes_created=nodes_created,
+                        )
                     if processed_count % 50 == 0:
                         await asyncio.sleep(0)
 
             info_logger(f"File processing complete. {len(all_file_data)} files parsed. "
                        f"Starting post-processing phase (inheritance + function calls)...")
-            
+
+            if job_id:
+                self.job_manager.update_job(job_id, phase="relationship_linking")
+
             import time as _time
             t0 = _time.time()
             self._create_all_inheritance_links(all_file_data, imports_map)
             t1 = _time.time()
             info_logger(f"Inheritance links created in {t1 - t0:.1f}s. Starting function calls...")
-            
+
             self._create_all_function_calls(all_file_data, imports_map)
             t2 = _time.time()
             info_logger(f"Function calls created in {t2 - t1:.1f}s. Total post-processing: {t2 - t0:.1f}s")
-            
+
             if job_id:
-                self.job_manager.update_job(job_id, status=JobStatus.COMPLETED, end_time=datetime.now())
+                self.job_manager.update_job(
+                    job_id, status=JobStatus.COMPLETED, phase="completed", end_time=datetime.now(),
+                )
         except Exception as e:
             error_message=str(e)
             error_logger(f"Failed to build graph for path {path}: {error_message}")
@@ -1658,7 +1668,7 @@ class GraphBuilder:
                     status=JobStatus.FAILED
 
                 self.job_manager.update_job(
-                    job_id, status=status, end_time=datetime.now(), errors=[str(e)]
+                    job_id, status=status, phase="failed", end_time=datetime.now(), errors=[str(e)]
                 )
 
     # Create a minimal File node for unsupported file types.

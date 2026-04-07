@@ -39,6 +39,10 @@ class JobInfo:
     result: Optional[Dict[str, Any]] = None
     path: Optional[str] = None
     is_dependency: bool = False
+    # Detailed progress fields
+    phase: str = "pending"  # pending, parsing, node_creation, relationship_linking, completed, failed
+    nodes_created: int = 0
+    edges_created: int = 0
 
     def __post_init__(self):
         """Ensures the errors list is initialized after the object is created."""
@@ -51,6 +55,14 @@ class JobInfo:
         if self.total_files == 0:
             return 0.0
         return (self.processed_files / self.total_files) * 100
+
+    @property
+    def avg_ms_per_file(self) -> Optional[float]:
+        """Average milliseconds per processed file."""
+        if self.processed_files == 0:
+            return None
+        elapsed = (datetime.now() - self.start_time).total_seconds()
+        return (elapsed / self.processed_files) * 1000
 
     @property
     def estimated_time_remaining(self) -> Optional[float]:

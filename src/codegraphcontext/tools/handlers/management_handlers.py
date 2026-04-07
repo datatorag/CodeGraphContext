@@ -55,26 +55,35 @@ def check_job_status(job_manager: JobManager, **args) -> Dict[str, Any]:
             }
         
         job_dict = asdict(job)
-        
+
+        # Add computed properties
+        job_dict["progress_percentage"] = round(job.progress_percentage, 1)
+
         if job.status == JobStatus.RUNNING:
-            if job.estimated_time_remaining:
+            if job.avg_ms_per_file is not None:
+                job_dict["avg_ms_per_file"] = round(job.avg_ms_per_file, 1)
+
+            if job.estimated_time_remaining is not None:
                 remaining = job.estimated_time_remaining
+                job_dict["estimated_time_remaining_seconds"] = round(remaining, 1)
                 job_dict["estimated_time_remaining_human"] = (
-                    f"{int(remaining // 60)}m {int(remaining % 60)}s" 
+                    f"{int(remaining // 60)}m {int(remaining % 60)}s"
                     if remaining >= 60 else f"{int(remaining)}s"
                 )
-            
+
             if job.start_time:
                 elapsed = (datetime.now() - job.start_time).total_seconds()
+                job_dict["elapsed_seconds"] = round(elapsed, 1)
                 job_dict["elapsed_time_human"] = (
-                    f"{int(elapsed // 60)}m {int(elapsed % 60)}s" 
+                    f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
                     if elapsed >= 60 else f"{int(elapsed)}s"
                 )
-        
+
         elif job.status == JobStatus.COMPLETED and job.start_time and job.end_time:
             duration = (job.end_time - job.start_time).total_seconds()
+            job_dict["actual_duration_seconds"] = round(duration, 1)
             job_dict["actual_duration_human"] = (
-                f"{int(duration // 60)}m {int(duration % 60)}s" 
+                f"{int(duration // 60)}m {int(duration % 60)}s"
                 if duration >= 60 else f"{int(duration)}s"
             )
         
