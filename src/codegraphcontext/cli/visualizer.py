@@ -9,9 +9,9 @@ def check_visual_flag(ctx, visual: bool, cypher_query: str = None):
     This is called from within analyze/find commands.
     """
     if visual and cypher_query:
-        # We start the visualizer on port 8000
+        # We start the visualizer on port 47322
         # Passing empty repo handles showing just the query results
-        port = 8000
+        port = 47322
         encoded_query = urllib.parse.quote(cypher_query)
         visualization_url = f"http://localhost:{port}/explore?cypher_query={encoded_query}"
         
@@ -27,24 +27,24 @@ def check_visual_flag(ctx, visual: bool, cypher_query: str = None):
 
 def visualize_call_graph(cypher_query: str):
     """Visualize a call graph result."""
-    visualize_helper(repo_path=None, port=8000)
+    visualize_helper(repo_path=None, port=47322)
 
 def visualize_call_chain(cypher_query: str):
     """Visualize a call chain result."""
-    visualize_helper(repo_path=None, port=8000)
+    visualize_helper(repo_path=None, port=47322)
 
 def visualize_dependencies(cypher_query: str):
     """Visualize code dependencies."""
-    visualize_helper(repo_path=None, port=8000)
+    visualize_helper(repo_path=None, port=47322)
 
 def visualize_inheritance_tree(cypher_query: str):
     """Visualize class inheritance tree."""
-    visualize_helper(repo_path=None, port=8000)
+    visualize_helper(repo_path=None, port=47322)
 
 def visualize_overrides(cypher_query: str):
     """Visualize method overrides."""
-    visualize_helper(repo_path=None, port=8000)
+    visualize_helper(repo_path=None, port=47322)
 
 def visualize_search_results(cypher_query: str):
     """Visualize search results."""
-    visualize_helper(repo_path=None, port=8000)
+    visualize_helper(repo_path=None, port=47322)

@@ -25,6 +25,9 @@ final class AppState: ObservableObject {
 
         // Keep indexing manager's port in sync
         indexingManager.mcpPort = pythonManager.mcpPort
+
+        // Auto-start servers on launch
+        start()
     }
 
     func start() {

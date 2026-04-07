@@ -121,7 +121,7 @@ def mcp_setup():
 @mcp_app.command("start")
 def mcp_start(
     transport: str = typer.Option("stdio", help="Transport mode: 'stdio' (default) or 'http'."),
-    port: int = typer.Option(3100, help="Port for HTTP transport mode."),
+    port: int = typer.Option(47321, help="Port for HTTP transport mode."),
 ):
     """
     Start the CodeGraphContext MCP server.
@@ -129,7 +129,7 @@ def mcp_start(
     Starts the server which listens for JSON-RPC requests.
 
     --transport stdio  (default) reads from stdin, used by IDE integrations.
-    --transport http   starts an HTTP server on --port (default 3100).
+    --transport http   starts an HTTP server on --port (default 47321).
     """
     console.print("[bold green]Starting CodeGraphContext Server...[/bold green]")
     _load_credentials()
@@ -1109,7 +1109,7 @@ def delete(
 @app.command()
 def visualize(
     repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository to visualize."),
-    port: int = typer.Option(8000, "--port", "-p", help="Port to run the visualizer server on."),
+    port: int = typer.Option(47322, "--port", "-p", help="Port to run the visualizer server on."),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
 ):
     """
@@ -2295,7 +2295,7 @@ def delete_abbrev(
 @app.command("v", rich_help_panel="Shortcuts")
 def visualize_abbrev(
     repo: Optional[str] = typer.Argument(None, help="Path to the repository to visualize."),
-    port: int = typer.Option(8000, "--port", "-p", help="Port to run the visualizer server on."),
+    port: int = typer.Option(47322, "--port", "-p", help="Port to run the visualizer server on."),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
 ):
     """Shortcut for 'cgc visualize'"""

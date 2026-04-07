@@ -10,7 +10,7 @@ final class IndexingManager: ObservableObject {
 
     private let logger = Logger(subsystem: "com.codegraphcontext.mac", category: "IndexingManager")
 
-    var mcpPort: Int = 3100
+    var mcpPort: Int = 47321
 
     private var mcpURL: URL {
         URL(string: "http://localhost:\(mcpPort)/mcp")!

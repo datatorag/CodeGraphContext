@@ -276,7 +276,7 @@ async def spa_fallback(request: Request, full_path: str):
     
     return HTMLResponse("Not Found (Built UI not found in viz/dist)", status_code=404)
 
-def run_server(host: str = "127.0.0.1", port: int = 8000, static_dir: Optional[str] = None):
+def run_server(host: str = "127.0.0.1", port: int = 47322, static_dir: Optional[str] = None):
     global _static_dir
     _static_dir = static_dir
     uvicorn.run(app, host=host, port=port)

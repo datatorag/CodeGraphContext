@@ -14,7 +14,7 @@ Use this skill when the user wants to index a new codebase or re-index an existi
 Call the CGC MCP server health endpoint to verify it's running:
 
 ```
-GET http://localhost:3100/health
+GET http://localhost:47321/health
 ```
 
 If the server is not responding, tell the user:

@@ -2,8 +2,8 @@ import SwiftUI
 import ServiceManagement
 
 struct SettingsView: View {
-    @AppStorage("mcpPort") private var mcpPort: Int = 3100
-    @AppStorage("vizPort") private var vizPort: Int = 8000
+    @AppStorage("mcpPort") private var mcpPort: Int = 47321
+    @AppStorage("vizPort") private var vizPort: Int = 47322
     @AppStorage("launchAtLogin") private var launchAtLogin: Bool = false
     @AppStorage("autoIndexPaths") private var autoIndexPathsData: Data = Data()
 

@@ -23,7 +23,7 @@ Or add manually to your project's `.mcp.json`:
   "mcpServers": {
     "codegraphcontext": {
       "type": "http",
-      "url": "http://localhost:3100/mcp"
+      "url": "http://localhost:47321/mcp"
     }
   }
 }

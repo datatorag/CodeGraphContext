@@ -72,8 +72,8 @@ def visualize_graph_query(db_manager, **args) -> Dict[str, Any]:
 
     try:
         # We point to the local server started by 'cgc visualize'
-        # By default it runs on port 8000
-        port = 8000
+        # By default it runs on port 47322
+        port = 47322
         encoded_query = urllib.parse.quote(cypher_query)
         visualization_url = f"http://localhost:{port}/index.html?cypher_query={encoded_query}"
         

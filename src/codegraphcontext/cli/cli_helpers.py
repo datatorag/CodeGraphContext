@@ -376,7 +376,7 @@ import uvicorn
 import urllib.parse
 from ..viz.server import run_server, set_db_manager
 
-def visualize_helper(repo_path: Optional[str] = None, port: int = 8000, context: Optional[str] = None):
+def visualize_helper(repo_path: Optional[str] = None, port: int = 47322, context: Optional[str] = None):
     """"Generates an interactive visualization using the Playground UI."""
     services = _initialize_services(context)
     if not all(services[:3]):

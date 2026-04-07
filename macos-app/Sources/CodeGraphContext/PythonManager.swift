@@ -10,13 +10,16 @@ final class PythonManager: ObservableObject {
     private var mcpProcess: Process?
     private var vizProcess: Process?
     private var healthCheckTimer: Timer?
+    private var mcpRestartCount = 0
+    private var vizRestartCount = 0
+    private let maxRestarts = 3
 
     private let logger = Logger(subsystem: "com.codegraphcontext.mac", category: "PythonManager")
 
     // MARK: - Configuration
 
-    var mcpPort: Int = 3100
-    var vizPort: Int = 8000
+    var mcpPort: Int = 47321
+    var vizPort: Int = 47322
 
     /// Path to the bundled Python interpreter inside the app bundle.
     /// Falls back to system python3 during development.
@@ -99,14 +102,18 @@ final class PythonManager: ObservableObject {
 
         process.terminationHandler = { [weak self] proc in
             Task { @MainActor in
-                self?.logger.warning("MCP server exited with code \(proc.terminationStatus)")
-                self?.mcpProcess = nil
-                self?.isMCPServerRunning = false
-                // Auto-restart on unexpected termination
-                if proc.terminationStatus != 0 {
-                    self?.logger.info("Auto-restarting MCP server after crash...")
+                guard let self else { return }
+                self.logger.warning("MCP server exited with code \(proc.terminationStatus)")
+                self.mcpProcess = nil
+                self.isMCPServerRunning = false
+                // Auto-restart on unexpected termination, with a cap
+                if proc.terminationStatus != 0, self.mcpRestartCount < self.maxRestarts {
+                    self.mcpRestartCount += 1
+                    self.logger.info("Auto-restarting MCP server (attempt \(self.mcpRestartCount)/\(self.maxRestarts))...")
                     try? await Task.sleep(for: .seconds(2))
-                    self?.startMCPServer()
+                    self.startMCPServer()
+                } else if self.mcpRestartCount >= self.maxRestarts {
+                    self.logger.error("MCP server failed after \(self.maxRestarts) restart attempts — giving up")
                 }
             }
         }
@@ -167,12 +174,16 @@ final class PythonManager: ObservableObject {
 
         process.terminationHandler = { [weak self] proc in
             Task { @MainActor in
-                self?.vizProcess = nil
-                self?.isVizServerRunning = false
-                if proc.terminationStatus != 0 {
-                    self?.logger.info("Auto-restarting viz server after crash...")
+                guard let self else { return }
+                self.vizProcess = nil
+                self.isVizServerRunning = false
+                if proc.terminationStatus != 0, self.vizRestartCount < self.maxRestarts {
+                    self.vizRestartCount += 1
+                    self.logger.info("Auto-restarting viz server (attempt \(self.vizRestartCount)/\(self.maxRestarts))...")
                     try? await Task.sleep(for: .seconds(2))
-                    self?.startVizServer()
+                    self.startVizServer()
+                } else if self.vizRestartCount >= self.maxRestarts {
+                    self.logger.error("Viz server failed after \(self.maxRestarts) restart attempts — giving up")
                 }
             }
         }
@@ -236,9 +247,29 @@ final class PythonManager: ObservableObject {
 
     private func configureProcess(_ process: Process) {
         var env = ProcessInfo.processInfo.environment
-        // FalkorDB configuration
-        env["CGC_RUNTIME_DB_TYPE"] = "falkordb"
-        env["FALKORDB_PATH"] = falkorDBPath
+        // Database configuration — use FalkorDB when bundled, KuzuDB for development
+        if isBundled {
+            env["CGC_RUNTIME_DB_TYPE"] = "falkordb"
+            env["FALKORDB_PATH"] = falkorDBPath
+        } else {
+            env["CGC_RUNTIME_DB_TYPE"] = "kuzudb"
+        }
+
+        // In dev mode, GUI processes don't inherit the shell PATH.
+        // Append common locations where pip/pyenv/Homebrew install binaries.
+        if !isBundled {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let extraPaths = [
+                "\(home)/.pyenv/shims",
+                "\(home)/.pyenv/bin",
+                "\(home)/.local/bin",
+                "/usr/local/bin",
+                "/opt/homebrew/bin",
+            ]
+            let currentPath = env["PATH"] ?? "/usr/bin:/bin"
+            env["PATH"] = (extraPaths + [currentPath]).joined(separator: ":")
+        }
+
         process.environment = env
 
         // Set working directory to app support

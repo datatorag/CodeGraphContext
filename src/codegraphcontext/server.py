@@ -96,7 +96,7 @@ class MCPServer:
             ctx = resolve_context(cwd=cwd or Path.cwd())
             self.resolved_context = ctx
 
-            if ctx.database:
+            if not os.environ.get('CGC_RUNTIME_DB_TYPE') and ctx.database:
                 os.environ['CGC_RUNTIME_DB_TYPE'] = ctx.database
 
             self.db_manager = get_database_manager(db_path=ctx.db_path)
@@ -333,7 +333,7 @@ class MCPServer:
                 }
                 print(json.dumps(error_response), flush=True)
 
-    async def run_http(self, host: str = "127.0.0.1", port: int = 3100):
+    async def run_http(self, host: str = "127.0.0.1", port: int = 47321):
         """
         Runs the MCP server as an HTTP server using FastAPI + uvicorn.
 
