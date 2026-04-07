@@ -16,6 +16,8 @@ from ..utils.tree_sitter_manager import get_tree_sitter_manager
 from ..cli.config_manager import get_config_value
 from ..utils.path_ignore import file_path_has_ignore_dir_segment
 import fnmatch
+import json as _json
+from concurrent.futures import ThreadPoolExecutor, as_completed
  
 DEFAULT_IGNORE_PATTERNS = [
     # Vendor / env dirs (gitignore-style; complements IGNORE_DIRS during indexing)
@@ -486,7 +488,6 @@ class GraphBuilder:
         if not file_data_list:
             return
 
-        import json as _json
 
         # Accumulators across all files
         file_nodes = []
@@ -606,8 +607,6 @@ class GraphBuilder:
             """, file_nodes)
 
         # ── Step 2: All other node types + edges in parallel via thread pool ──
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         tasks = []
 
         # Code nodes per label
@@ -703,7 +702,6 @@ class GraphBuilder:
     @staticmethod
     def _normalize_batch(batch: list):
         """Normalize a batch of dicts for KuzuDB: ensure uniform keys and types."""
-        import json as _json
         if not batch:
             return
         all_keys = set()
