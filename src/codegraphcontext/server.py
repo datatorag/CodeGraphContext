@@ -333,6 +333,96 @@ class MCPServer:
                 }
                 print(json.dumps(error_response), flush=True)
 
+    async def run_http(self, host: str = "127.0.0.1", port: int = 3100):
+        """
+        Runs the MCP server as an HTTP server using FastAPI + uvicorn.
+
+        Exposes:
+        - POST /mcp  — JSON-RPC endpoint (same protocol as stdio mode)
+        - GET /health — health check returning status and version
+        """
+        from fastapi import FastAPI, Request
+        from fastapi.responses import JSONResponse
+        from fastapi.middleware.cors import CORSMiddleware
+        import uvicorn
+        from importlib.metadata import version as pkg_version, PackageNotFoundError
+
+        try:
+            _version = pkg_version("codegraphcontext")
+        except PackageNotFoundError:
+            _version = "dev"
+
+        http_app = FastAPI(title="CodeGraphContext MCP Server")
+        http_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        self.code_watcher.start()
+
+        @http_app.get("/health")
+        async def health():
+            return {"status": "ok", "version": _version}
+
+        @http_app.post("/mcp")
+        async def mcp_endpoint(request: Request):
+            body = await request.json()
+            method = body.get("method")
+            params = body.get("params", {})
+            request_id = body.get("id")
+
+            try:
+                if method == "initialize":
+                    result = {
+                        "protocolVersion": "2025-03-26",
+                        "serverInfo": {
+                            "name": "CodeGraphContext",
+                            "version": _version,
+                            "systemPrompt": LLM_SYSTEM_PROMPT,
+                        },
+                        "capabilities": {"tools": {"listTools": True}},
+                    }
+                    return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result})
+                elif method == "tools/list":
+                    return JSONResponse({
+                        "jsonrpc": "2.0", "id": request_id,
+                        "result": {"tools": list(self.tools.values())},
+                    })
+                elif method == "tools/call":
+                    tool_name = params.get("name")
+                    args = params.get("arguments", {})
+                    result = await self.handle_tool_call(tool_name, args)
+                    result = _strip_workspace_prefix(result)
+                    if "error" in result:
+                        return JSONResponse({
+                            "jsonrpc": "2.0", "id": request_id,
+                            "error": {"code": -32000, "message": "Tool execution error", "data": result},
+                        })
+                    return JSONResponse({
+                        "jsonrpc": "2.0", "id": request_id,
+                        "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]},
+                    })
+                elif method == "notifications/initialized":
+                    return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": {}})
+                else:
+                    return JSONResponse({
+                        "jsonrpc": "2.0", "id": request_id,
+                        "error": {"code": -32601, "message": f"Method not found: {method}"},
+                    })
+            except Exception as e:
+                error_logger(f"Error processing HTTP request: {e}\n{traceback.format_exc()}")
+                return JSONResponse({
+                    "jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32603, "message": f"Internal error: {str(e)}"},
+                })
+
+        print(f"MCP HTTP Server running on http://{host}:{port}", file=sys.stderr, flush=True)
+        config = uvicorn.Config(http_app, host=host, port=port, log_level="info")
+        server = uvicorn.Server(config)
+        await server.serve()
+
     def shutdown(self):
         """Gracefully shuts down the server and its components."""
         debug_logger("Shutting down server...")

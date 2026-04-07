@@ -119,12 +119,17 @@ def mcp_setup():
     configure_mcp_client()
 
 @mcp_app.command("start")
-def mcp_start():
+def mcp_start(
+    transport: str = typer.Option("stdio", help="Transport mode: 'stdio' (default) or 'http'."),
+    port: int = typer.Option(3100, help="Port for HTTP transport mode."),
+):
     """
     Start the CodeGraphContext MCP server.
-    
-    Starts the server which listens for JSON-RPC requests from stdin.
-    This is used by IDE integrations (VS Code, Cursor, etc.).
+
+    Starts the server which listens for JSON-RPC requests.
+
+    --transport stdio  (default) reads from stdin, used by IDE integrations.
+    --transport http   starts an HTTP server on --port (default 3100).
     """
     console.print("[bold green]Starting CodeGraphContext Server...[/bold green]")
     _load_credentials()
@@ -134,7 +139,10 @@ def mcp_start():
     asyncio.set_event_loop(loop)
     try:
         server = MCPServer(loop=loop, cwd=Path.cwd())
-        loop.run_until_complete(server.run())
+        if transport == "http":
+            loop.run_until_complete(server.run_http(port=port))
+        else:
+            loop.run_until_complete(server.run())
     except ValueError as e:
         # This typically happens if credentials are still not found after all checks.
         console.print(f"[bold red]Configuration Error:[/bold red] {e}")
