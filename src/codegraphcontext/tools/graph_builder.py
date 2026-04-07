@@ -1848,10 +1848,9 @@ class GraphBuilder:
             supported_extensions = self.parsers.keys()
             all_files = path.rglob("*") if path.is_dir() else [path]
 
-            # Previously only files with supported extensions were indexed.
-            # Updated to include all files so that unsupported file types
-            # can still be represented as minimal File nodes in the graph.
-            files = [f for f in all_files if f.is_file()]
+            # Only index files with supported extensions — skip images, configs,
+            # binaries, etc. to reduce node count and indexing time significantly.
+            files = [f for f in all_files if f.is_file() and f.suffix in supported_extensions]
 
             # Filter default ignored directories
             ignore_dirs_str = get_config_value("IGNORE_DIRS") or ""
@@ -1905,7 +1904,6 @@ class GraphBuilder:
 
             processed_count = 0
             nodes_created = 0
-            minimal_files = []  # files that couldn't be parsed (unsupported ext)
 
             for file in files:
                 if file.is_file():
@@ -1917,9 +1915,6 @@ class GraphBuilder:
                         if "error" not in file_data:
                             all_file_data.append(file_data)
                             nodes_created += 1 + len(file_data.get('functions', [])) + len(file_data.get('classes', []))
-                        else:
-                            minimal_files.append((file, repo_path))
-                            nodes_created += 1
                     except Exception as file_err:
                         if job_id:
                             self.job_manager.add_error(job_id, f"{file}: {file_err}")
@@ -1933,17 +1928,13 @@ class GraphBuilder:
                     phase="node_creation",
                 )
 
-            info_logger(f"Parsing complete: {len(all_file_data)} parsed, {len(minimal_files)} minimal. "
+            info_logger(f"Parsing complete: {len(all_file_data)} code files parsed. "
                        f"Writing all nodes to graph...")
 
-            # ── Phase 2: Write ALL nodes in bulk (~12 total DB queries) ──
+            # ── Phase 2: Write ALL nodes in bulk (~10 total DB queries) ──
             # For fresh indexing, use CREATE (no existence check) which is much
             # faster than MERGE. Safe because we checked the repo isn't already indexed.
             self.add_files_to_graph_batch(all_file_data, repo_name, imports_map, resolved_repo_path_str, use_create=True)
-
-            # Write minimal file nodes
-            for file, repo_path in minimal_files:
-                self.add_minimal_file_node(file, repo_path, is_dependency)
 
             # Batch-create directory hierarchy now that all File nodes exist
             self._create_directory_hierarchy_batch(files, path)
