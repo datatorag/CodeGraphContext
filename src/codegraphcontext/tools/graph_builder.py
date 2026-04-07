@@ -469,6 +469,254 @@ class GraphBuilder:
                     MERGE (p)-[:CONTAINS]->(f)
                 """, batch=[{'parent': p, 'child': c} for p, c in dir_file_edges])
 
+    def add_files_to_graph_batch(self, file_data_list: list, repo_name: str, imports_map: dict, repo_path_str: str):
+        """Add multiple files and their contents in bulk, minimizing DB round trips.
+
+        Instead of N files × ~6 queries = 6N round trips, this does ~12 total
+        queries regardless of file count.
+        """
+        if not file_data_list:
+            return
+
+        import json as _json
+
+        # Accumulators across all files
+        file_nodes = []
+        node_batches = {}   # label -> list of rows (each row includes file_path)
+        contains_batches = {}  # label -> list of {file_path, name, line_number}
+        params_batch = []
+        class_fn_batch = []
+        nested_fn_batch = []
+        js_imports = []
+        other_imports = []
+
+        for file_data in file_data_list:
+            file_path_str = str(Path(file_data['path']).resolve())
+            file_name = Path(file_path_str).name
+            is_dependency = file_data.get('is_dependency', False)
+            lang = file_data.get('lang')
+
+            try:
+                relative_path = str(Path(file_path_str).relative_to(Path(repo_path_str)))
+            except ValueError:
+                relative_path = file_name
+
+            file_nodes.append({
+                'path': file_path_str, 'name': file_name,
+                'relative_path': relative_path, 'is_dependency': is_dependency,
+            })
+
+            # Collect code nodes
+            item_mappings = [
+                (file_data.get('functions', []),  'Function'),
+                (file_data.get('classes', []),    'Class'),
+                (file_data.get('traits', []),     'Trait'),
+                (file_data.get('variables', []),  'Variable'),
+                (file_data.get('interfaces', []), 'Interface'),
+                (file_data.get('macros', []),     'Macro'),
+                (file_data.get('structs', []),    'Struct'),
+                (file_data.get('enums', []),      'Enum'),
+                (file_data.get('unions', []),     'Union'),
+                (file_data.get('records', []),    'Record'),
+                (file_data.get('properties', []), 'Property'),
+            ]
+
+            for item_list, label in item_mappings:
+                if not item_list:
+                    continue
+                if label not in node_batches:
+                    node_batches[label] = []
+                    contains_batches[label] = []
+
+                for item in item_list:
+                    row = dict(item)
+                    if label == 'Function' and 'cyclomatic_complexity' not in row:
+                        row['cyclomatic_complexity'] = 1
+                    row = self._sanitize_props(row)
+                    # Ensure file_path is in the row for cross-file batching
+                    row['path'] = file_path_str
+                    node_batches[label].append(row)
+                    contains_batches[label].append({
+                        'file_path': file_path_str,
+                        'name': item['name'],
+                        'line_number': item['line_number'],
+                    })
+
+                    if label == 'Function':
+                        for arg_name in item.get('args', []):
+                            params_batch.append({
+                                'func_name': item['name'],
+                                'line_number': item['line_number'],
+                                'arg_name': arg_name,
+                                'file_path': file_path_str,
+                            })
+                        if item.get('class_context'):
+                            class_fn_batch.append({
+                                'class_name': item['class_context'],
+                                'func_name': item['name'],
+                                'func_line': item['line_number'],
+                                'file_path': file_path_str,
+                            })
+                        if item.get('context_type') == 'function_definition':
+                            nested_fn_batch.append({
+                                'outer': item['context'],
+                                'inner_name': item['name'],
+                                'inner_line': item['line_number'],
+                                'file_path': file_path_str,
+                            })
+
+            # Collect imports
+            for imp in file_data.get('imports', []):
+                if lang == 'javascript':
+                    module_name = imp.get('source')
+                    if module_name:
+                        js_imports.append({
+                            'module_name': module_name,
+                            'imported_name': imp.get('name', '*'),
+                            'alias': imp.get('alias'),
+                            'line_number': imp.get('line_number'),
+                            'file_path': file_path_str,
+                        })
+                else:
+                    imp_copy = dict(imp)
+                    imp_copy['file_path'] = file_path_str
+                    other_imports.append(imp_copy)
+
+        # ── FLUSH: Execute all batched queries ───────────────────────────
+        with self.driver.session() as session:
+            # 1. Create all File nodes
+            if file_nodes:
+                session.run("""
+                    UNWIND $batch AS row
+                    MERGE (f:File {path: row.path})
+                    SET f.name = row.name, f.relative_path = row.relative_path,
+                        f.is_dependency = row.is_dependency
+                """, batch=file_nodes)
+
+            # 2. Create code nodes per label
+            for label, batch in node_batches.items():
+                if not batch:
+                    continue
+                # Normalize batch for KuzuDB compatibility
+                self._normalize_batch(batch)
+                session.run(f"""
+                    UNWIND $batch AS row
+                    MERGE (n:{label} {{name: row.name, path: row.path, line_number: row.line_number}})
+                    SET n += row
+                """, batch=batch)
+
+            # 3. Create File-[:CONTAINS]->Node edges per label
+            for label, batch in contains_batches.items():
+                if not batch:
+                    continue
+                session.run(f"""
+                    UNWIND $batch AS row
+                    MATCH (f:File {{path: row.file_path}})
+                    MATCH (n:{label} {{name: row.name, path: row.file_path, line_number: row.line_number}})
+                    MERGE (f)-[:CONTAINS]->(n)
+                """, batch=batch)
+
+            # 4. Parameters
+            if params_batch:
+                session.run("""
+                    UNWIND $batch AS row
+                    MATCH (fn:Function {name: row.func_name, path: row.file_path, line_number: row.line_number})
+                    MERGE (p:Parameter {name: row.arg_name, path: row.file_path, function_line_number: row.line_number})
+                    MERGE (fn)-[:HAS_PARAMETER]->(p)
+                """, batch=params_batch)
+
+            # 5. Class->Function CONTAINS
+            if class_fn_batch:
+                session.run("""
+                    UNWIND $batch AS row
+                    MATCH (c:Class {name: row.class_name, path: row.file_path})
+                    MATCH (fn:Function {name: row.func_name, path: row.file_path, line_number: row.func_line})
+                    MERGE (c)-[:CONTAINS]->(fn)
+                """, batch=class_fn_batch)
+
+            # 6. Nested Function->Function CONTAINS
+            if nested_fn_batch:
+                session.run("""
+                    UNWIND $batch AS row
+                    MATCH (outer:Function {name: row.outer, path: row.file_path})
+                    MATCH (inner:Function {name: row.inner_name, path: row.file_path, line_number: row.inner_line})
+                    MERGE (outer)-[:CONTAINS]->(inner)
+                """, batch=nested_fn_batch)
+
+            # 7. JS imports
+            if js_imports:
+                session.run("""
+                    UNWIND $batch AS row
+                    MATCH (f:File {path: row.file_path})
+                    MERGE (m:Module {name: row.module_name})
+                    MERGE (f)-[r:IMPORTS]->(m)
+                    SET r.imported_name = row.imported_name,
+                        r.alias = row.alias,
+                        r.line_number = row.line_number
+                """, batch=js_imports)
+
+            # 8. Other imports
+            if other_imports:
+                session.run("""
+                    UNWIND $batch AS row
+                    MATCH (f:File {path: row.file_path})
+                    MERGE (m:Module {name: row.name})
+                    SET m.alias = row.alias,
+                        m.full_import_name = coalesce(row.full_import_name, m.full_import_name)
+                    MERGE (f)-[r:IMPORTS]->(m)
+                    SET r.line_number = row.line_number,
+                        r.alias = row.alias
+                """, batch=other_imports)
+
+    @staticmethod
+    def _normalize_batch(batch: list):
+        """Normalize a batch of dicts for KuzuDB: ensure uniform keys and types."""
+        import json as _json
+        if not batch:
+            return
+        all_keys = set()
+        for b in batch:
+            all_keys.update(b.keys())
+        for k in all_keys:
+            counts = {}
+            for b in batch:
+                v = b.get(k)
+                if v is not None:
+                    counts[type(v).__name__] = counts.get(type(v).__name__, 0) + 1
+            dominant = max(counts, key=counts.get) if counts else 'str'
+            for b in batch:
+                v = b.get(k)
+                if dominant == 'list':
+                    if isinstance(v, list):
+                        b[k] = [str(x) for x in v] if v else [""]
+                    elif isinstance(v, str) and v:
+                        try:
+                            p = _json.loads(v)
+                            b[k] = [str(x) for x in p] if isinstance(p, list) and p else [""]
+                        except Exception:
+                            b[k] = [v]
+                    else:
+                        b[k] = [""]
+                elif dominant == 'int':
+                    if v is None or v == "":
+                        b[k] = 0
+                    elif not isinstance(v, int):
+                        try:
+                            b[k] = int(v)
+                        except Exception:
+                            b[k] = 0
+                elif dominant == 'bool':
+                    b[k] = bool(v) if v is not None else False
+                else:
+                    if v is None:
+                        b[k] = ""
+                    elif isinstance(v, list):
+                        b[k] = _json.dumps(v)
+                    elif not isinstance(v, str):
+                        b[k] = str(v)
+        key_order = sorted(all_keys)
+        batch[:] = [{kk: b[kk] for kk in key_order} for b in batch]
+
     # First pass to add file and its contents
     def add_file_to_graph(self, file_data: Dict, repo_name: str, imports_map: dict, repo_path_str: str = None, skip_dir_hierarchy: bool = False):
         """Adds a file and its contents using batched UNWIND queries (one round-trip per node type)."""
@@ -1690,8 +1938,11 @@ class GraphBuilder:
             if job_id:
                 self.job_manager.update_job(job_id, phase="node_creation")
 
+            FLUSH_SIZE = 100  # Flush to DB every N files
             processed_count = 0
             nodes_created = 0
+            pending_batch = []  # accumulate parsed file_data for bulk flush
+
             for file in files:
                 if file.is_file():
                     if job_id:
@@ -1700,9 +1951,8 @@ class GraphBuilder:
                     try:
                         file_data = self.parse_file(repo_path, file, is_dependency)
                         if "error" not in file_data:
-                            self.add_file_to_graph(file_data, repo_name, imports_map, repo_path_str=resolved_repo_path_str, skip_dir_hierarchy=True)
+                            pending_batch.append(file_data)
                             all_file_data.append(file_data)
-                            # Count nodes: 1 file + functions + classes
                             nodes_created += 1 + len(file_data.get('functions', [])) + len(file_data.get('classes', []))
                         else:
                             self.add_minimal_file_node(file, repo_path, is_dependency)
@@ -1714,12 +1964,21 @@ class GraphBuilder:
                                 job.errors.append(f"{file}: {file_err}")
                     processed_count += 1
 
+                    # Flush batch to DB periodically
+                    if len(pending_batch) >= FLUSH_SIZE:
+                        self.add_files_to_graph_batch(pending_batch, repo_name, imports_map, resolved_repo_path_str)
+                        pending_batch = []
+
                     if job_id:
                         self.job_manager.update_job(
                             job_id, processed_files=processed_count, nodes_created=nodes_created,
                         )
                     if processed_count % 50 == 0:
                         await asyncio.sleep(0)
+
+            # Flush remaining files
+            if pending_batch:
+                self.add_files_to_graph_batch(pending_batch, repo_name, imports_map, resolved_repo_path_str)
 
             # Batch-create directory hierarchy now that all File nodes exist
             self._create_directory_hierarchy_batch(files, path)
