@@ -469,11 +469,16 @@ class GraphBuilder:
                     MERGE (p)-[:CONTAINS]->(f)
                 """, batch=[{'parent': p, 'child': c} for p, c in dir_file_edges])
 
-    def add_files_to_graph_batch(self, file_data_list: list, repo_name: str, imports_map: dict, repo_path_str: str):
+    def add_files_to_graph_batch(self, file_data_list: list, repo_name: str, imports_map: dict, repo_path_str: str, use_create: bool = False):
         """Add multiple files and their contents in bulk, minimizing DB round trips.
 
         Instead of N files × ~6 queries = 6N round trips, this does ~12 total
         queries regardless of file count.
+
+        Args:
+            use_create: If True, use CREATE instead of MERGE for node insertion.
+                This is much faster for initial indexing (no existence check),
+                but will fail if nodes already exist.
         """
         if not file_data_list:
             return
@@ -584,6 +589,9 @@ class GraphBuilder:
 
         # ── FLUSH: Execute all batched queries ───────────────────────────
         CHUNK = 2000  # Max items per UNWIND to avoid FalkorDB memory pressure
+        # CREATE is ~5x faster than MERGE for initial loads (no existence check).
+        node_op = "CREATE" if use_create else "MERGE"
+        edge_op = "CREATE" if use_create else "MERGE"
 
         def _chunked_run(session, query, batch, **extra):
             """Run a query in chunks to handle large batches."""
@@ -593,9 +601,9 @@ class GraphBuilder:
         with self.driver.session() as session:
             # 1. Create all File nodes
             if file_nodes:
-                _chunked_run(session, """
+                _chunked_run(session, f"""
                     UNWIND $batch AS row
-                    MERGE (f:File {path: row.path})
+                    {node_op} (f:File {{path: row.path}})
                     SET f.name = row.name, f.relative_path = row.relative_path,
                         f.is_dependency = row.is_dependency
                 """, file_nodes)
@@ -605,11 +613,19 @@ class GraphBuilder:
                 if not batch:
                     continue
                 self._normalize_batch(batch)
-                _chunked_run(session, f"""
-                    UNWIND $batch AS row
-                    MERGE (n:{label} {{name: row.name, path: row.path, line_number: row.line_number}})
-                    SET n += row
-                """, batch)
+                if use_create:
+                    # CREATE is simpler — just set all properties directly
+                    _chunked_run(session, f"""
+                        UNWIND $batch AS row
+                        CREATE (n:{label} {{name: row.name, path: row.path, line_number: row.line_number}})
+                        SET n += row
+                    """, batch)
+                else:
+                    _chunked_run(session, f"""
+                        UNWIND $batch AS row
+                        MERGE (n:{label} {{name: row.name, path: row.path, line_number: row.line_number}})
+                        SET n += row
+                    """, batch)
 
             # 3. Create File-[:CONTAINS]->Node edges per label
             for label, batch in contains_batches.items():
@@ -619,57 +635,57 @@ class GraphBuilder:
                     UNWIND $batch AS row
                     MATCH (f:File {{path: row.file_path}})
                     MATCH (n:{label} {{name: row.name, path: row.file_path, line_number: row.line_number}})
-                    MERGE (f)-[:CONTAINS]->(n)
+                    {edge_op} (f)-[:CONTAINS]->(n)
                 """, batch)
 
             # 4. Parameters
             if params_batch:
-                _chunked_run(session, """
+                _chunked_run(session, f"""
                     UNWIND $batch AS row
-                    MATCH (fn:Function {name: row.func_name, path: row.file_path, line_number: row.line_number})
-                    MERGE (p:Parameter {name: row.arg_name, path: row.file_path, function_line_number: row.line_number})
-                    MERGE (fn)-[:HAS_PARAMETER]->(p)
+                    MATCH (fn:Function {{name: row.func_name, path: row.file_path, line_number: row.line_number}})
+                    {node_op} (p:Parameter {{name: row.arg_name, path: row.file_path, function_line_number: row.line_number}})
+                    {edge_op} (fn)-[:HAS_PARAMETER]->(p)
                 """, params_batch)
 
             # 5. Class->Function CONTAINS
             if class_fn_batch:
-                _chunked_run(session, """
+                _chunked_run(session, f"""
                     UNWIND $batch AS row
-                    MATCH (c:Class {name: row.class_name, path: row.file_path})
-                    MATCH (fn:Function {name: row.func_name, path: row.file_path, line_number: row.func_line})
-                    MERGE (c)-[:CONTAINS]->(fn)
+                    MATCH (c:Class {{name: row.class_name, path: row.file_path}})
+                    MATCH (fn:Function {{name: row.func_name, path: row.file_path, line_number: row.func_line}})
+                    {edge_op} (c)-[:CONTAINS]->(fn)
                 """, class_fn_batch)
 
             # 6. Nested Function->Function CONTAINS
             if nested_fn_batch:
-                _chunked_run(session, """
+                _chunked_run(session, f"""
                     UNWIND $batch AS row
-                    MATCH (outer:Function {name: row.outer, path: row.file_path})
-                    MATCH (inner:Function {name: row.inner_name, path: row.file_path, line_number: row.inner_line})
-                    MERGE (outer)-[:CONTAINS]->(inner)
+                    MATCH (outer:Function {{name: row.outer, path: row.file_path}})
+                    MATCH (inner:Function {{name: row.inner_name, path: row.file_path, line_number: row.inner_line}})
+                    {edge_op} (outer)-[:CONTAINS]->(inner)
                 """, nested_fn_batch)
 
             # 7. JS imports
             if js_imports:
-                _chunked_run(session, """
+                _chunked_run(session, f"""
                     UNWIND $batch AS row
-                    MATCH (f:File {path: row.file_path})
-                    MERGE (m:Module {name: row.module_name})
-                    MERGE (f)-[r:IMPORTS]->(m)
+                    MATCH (f:File {{path: row.file_path}})
+                    MERGE (m:Module {{name: row.module_name}})
+                    {edge_op} (f)-[r:IMPORTS]->(m)
                     SET r.imported_name = row.imported_name,
                         r.alias = row.alias,
                         r.line_number = row.line_number
                 """, js_imports)
 
-            # 8. Other imports
+            # 8. Other imports (always MERGE for Module nodes — may be shared across files)
             if other_imports:
-                _chunked_run(session, """
+                _chunked_run(session, f"""
                     UNWIND $batch AS row
-                    MATCH (f:File {path: row.file_path})
-                    MERGE (m:Module {name: row.name})
+                    MATCH (f:File {{path: row.file_path}})
+                    MERGE (m:Module {{name: row.name}})
                     SET m.alias = row.alias,
                         m.full_import_name = coalesce(row.full_import_name, m.full_import_name)
-                    MERGE (f)-[r:IMPORTS]->(m)
+                    {edge_op} (f)-[r:IMPORTS]->(m)
                     SET r.line_number = row.line_number,
                         r.alias = row.alias
                 """, other_imports)
@@ -1981,7 +1997,9 @@ class GraphBuilder:
                        f"Writing all nodes to graph...")
 
             # ── Phase 2: Write ALL nodes in bulk (~12 total DB queries) ──
-            self.add_files_to_graph_batch(all_file_data, repo_name, imports_map, resolved_repo_path_str)
+            # For fresh indexing, use CREATE (no existence check) which is much
+            # faster than MERGE. Safe because we checked the repo isn't already indexed.
+            self.add_files_to_graph_batch(all_file_data, repo_name, imports_map, resolved_repo_path_str, use_create=True)
 
             # Write minimal file nodes
             for file, repo_path in minimal_files:
