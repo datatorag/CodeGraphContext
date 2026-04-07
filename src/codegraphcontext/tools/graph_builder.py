@@ -492,7 +492,6 @@ class GraphBuilder:
         # Accumulators across all files
         file_nodes = []
         node_batches = {}   # label -> list of rows (each row includes path)
-        params_batch = []
         class_fn_batch = []
         nested_fn_batch = []
         js_imports = []
@@ -514,12 +513,12 @@ class GraphBuilder:
                 'relative_path': relative_path, 'is_dependency': is_dependency,
             })
 
-            # Collect code nodes
+            # Collect code nodes — skip Variable and Parameter (76% of node count)
+            # for faster initial indexing. They can be added in a second pass.
             item_mappings = [
                 (file_data.get('functions', []),  'Function'),
                 (file_data.get('classes', []),    'Class'),
                 (file_data.get('traits', []),     'Trait'),
-                (file_data.get('variables', []),  'Variable'),
                 (file_data.get('interfaces', []), 'Interface'),
                 (file_data.get('macros', []),     'Macro'),
                 (file_data.get('structs', []),    'Struct'),
@@ -544,13 +543,6 @@ class GraphBuilder:
                     node_batches[label].append(row)
 
                     if label == 'Function':
-                        for arg_name in item.get('args', []):
-                            params_batch.append({
-                                'func_name': item['name'],
-                                'line_number': item['line_number'],
-                                'arg_name': arg_name,
-                                'file_path': file_path_str,
-                            })
                         if item.get('class_context'):
                             class_fn_batch.append({
                                 'class_name': item['class_context'],
@@ -584,9 +576,10 @@ class GraphBuilder:
                     other_imports.append(imp_copy)
 
         # ── FLUSH: Execute all batched queries ───────────────────────────
-        # Larger chunks = fewer queries = less per-query overhead.
-        # FalkorDB handles 50K-item UNWINDs fine in-process.
-        CHUNK = 50000
+        # Balance: large enough to minimize round trips, small enough that
+        # each query completes in seconds (not minutes) so progress is visible
+        # and FalkorDB doesn't block on a single massive transaction.
+        CHUNK = 5000
         # CREATE is ~5x faster than MERGE for initial loads (no existence check).
         node_op = "CREATE" if use_create else "MERGE"
         edge_op = "CREATE" if use_create else "MERGE"
@@ -635,14 +628,6 @@ class GraphBuilder:
                     MATCH (n:{label} {{name: row.name, path: row.file_path, line_number: row.line_number}})
                     {edge_op} (f)-[:CONTAINS]->(n)
                 """, edge_batch))
-
-        if params_batch:
-            tasks.append((f"""
-                UNWIND $batch AS row
-                MATCH (fn:Function {{name: row.func_name, path: row.file_path, line_number: row.line_number}})
-                {node_op} (p:Parameter {{name: row.arg_name, path: row.file_path, function_line_number: row.line_number}})
-                {edge_op} (fn)-[:HAS_PARAMETER]->(p)
-            """, params_batch))
 
         if class_fn_batch:
             tasks.append((f"""
