@@ -83,12 +83,9 @@ final class PythonManager: ObservableObject {
 
     func startAll() {
         startFalkorDB()
-        // Give FalkorDB 2s to initialize before starting CGC (which connects on startup)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.startMCPServer()
-            self?.startVizServer()
-            self?.startHealthChecks()
-        }
+        startMCPServer()
+        startVizServer()
+        startHealthChecks()
     }
 
     func stopAll() {
