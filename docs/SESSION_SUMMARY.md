@@ -12,7 +12,7 @@
 - Starts FalkorDB (bundled redis-server + falkordb.so) as subprocess
 - Starts CGC MCP server (`cgc mcp start --transport http --port 47321`)
 - Status indicator (green/red), repo indexing via folder picker, settings
-- No Docker, no external dependencies
+- No external dependencies
 
 ### 3. Claude Code Plugin
 - `claude-plugin/` — `.mcp.json` pointing to `http://localhost:47321/mcp`

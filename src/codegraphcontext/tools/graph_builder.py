@@ -1024,12 +1024,33 @@ class GraphBuilder:
         # 4. Name imported in this file → resolve via import
         if not resolved_path and lookup_name in local_imports:
             full_import_name = local_imports[lookup_name]
-            # Try direct match on full import name
-            if full_import_name in imports_map:
-                direct_paths = imports_map[full_import_name]
-                if direct_paths and len(direct_paths) == 1:
-                    resolved_path = direct_paths[0]
-            # Try matching import path against file paths
+            # 4a. For dotted calls (module.func), resolve called_name within the
+            #     module's directory.  e.g. user_service.authenticate() where
+            #     user_service → webapp.services.user → find 'authenticate' in
+            #     files under webapp/services/user/.
+            if base_obj and called_name != lookup_name:
+                module_path_fragment = full_import_name.replace('.', '/')
+                candidate_paths = imports_map.get(called_name, [])
+                for p in candidate_paths:
+                    if module_path_fragment in p:
+                        resolved_path = p
+                        break
+                # Also try: the module's __init__.py re-exports from a submodule,
+                # so the function is in any file under the module directory.
+                if not resolved_path and candidate_paths:
+                    # If exactly one candidate contains the module prefix, use it
+                    module_prefix_matches = [p for p in candidate_paths
+                                             if module_path_fragment.split('/')[-1] in p]
+                    if len(module_prefix_matches) == 1:
+                        resolved_path = module_prefix_matches[0]
+
+            # 4b. Direct match: lookup_name itself is a function/class in imports_map
+            if not resolved_path:
+                if full_import_name in imports_map:
+                    direct_paths = imports_map[full_import_name]
+                    if direct_paths and len(direct_paths) == 1:
+                        resolved_path = direct_paths[0]
+            # 4c. Try matching import path against file paths
             if not resolved_path:
                 possible_paths = imports_map.get(lookup_name, [])
                 for p in possible_paths:
@@ -1037,13 +1058,20 @@ class GraphBuilder:
                         resolved_path = p
                         break
 
-        # 5. Unambiguous: name exists in exactly one file AND is imported by caller
+        # 5. Dotted call where base_obj is an imported module: look up called_name
+        #    directly in imports_map (handles 'from X import Y as alias; alias.func()')
+        if not resolved_path and base_obj and called_name != lookup_name:
+            candidate_paths = imports_map.get(called_name, [])
+            if len(candidate_paths) == 1 and lookup_name in local_imports:
+                resolved_path = candidate_paths[0]
+
+        # 6. Unambiguous: name exists in exactly one file AND is imported by caller
         if not resolved_path:
             possible_paths = imports_map.get(lookup_name, [])
             if len(possible_paths) == 1 and lookup_name in local_imports:
                 resolved_path = possible_paths[0]
 
-        # 6. Final check: called_name (not lookup_name) in local names
+        # 7. Final check: called_name (not lookup_name) in local names
         if not resolved_path and called_name != lookup_name and called_name in local_names:
             resolved_path = caller_file_path
 

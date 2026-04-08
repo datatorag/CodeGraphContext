@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import os
 
 struct StandardError: TextOutputStream {
@@ -298,14 +299,22 @@ final class PythonManager: ObservableObject {
     private func startHealthChecks() {
         healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                await self?.checkMCPHealth()
+                await self?.checkAllHealth()
             }
         }
+        // Run immediately on start
+        Task { await checkAllHealth() }
     }
 
     private func stopHealthChecks() {
         healthCheckTimer?.invalidate()
         healthCheckTimer = nil
+    }
+
+    private func checkAllHealth() async {
+        await checkMCPHealth()
+        await checkVizHealth()
+        await checkFalkorDBHealth()
     }
 
     private func checkMCPHealth() async {
@@ -318,15 +327,78 @@ final class PythonManager: ObservableObject {
                     isMCPServerRunning = true
                 }
             } else {
-                logger.warning("MCP health check returned non-200")
                 isMCPServerRunning = false
             }
         } catch {
-            // Server not responding — may still be starting up
             if isMCPServerRunning {
                 logger.warning("MCP health check failed: \(error)")
                 isMCPServerRunning = false
             }
+        }
+    }
+
+    private func checkVizHealth() async {
+        guard let url = URL(string: "http://localhost:\(vizPort)/") else { return }
+        do {
+            let (_, response) = try await URLSession.shared.data(from: url)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                if !isVizServerRunning {
+                    logger.info("Viz server health check passed — marking as running")
+                    isVizServerRunning = true
+                }
+            } else {
+                isVizServerRunning = false
+            }
+        } catch {
+            if isVizServerRunning {
+                isVizServerRunning = false
+            }
+        }
+    }
+
+    private func checkFalkorDBHealth() async {
+        // Quick TCP check: can we connect to the FalkorDB port?
+        let isUp = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let host = NWEndpoint.Host("localhost")
+            let port = NWEndpoint.Port(integerLiteral: UInt16(falkorDBPort))
+            let connection = NWConnection(host: host, port: port, using: .tcp)
+            let resumed = LockedFlag()
+
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    if resumed.setIfFirst() {
+                        connection.cancel()
+                        continuation.resume(returning: true)
+                    }
+                case .failed:
+                    if resumed.setIfFirst() {
+                        connection.cancel()
+                        continuation.resume(returning: false)
+                    }
+                case .cancelled:
+                    if resumed.setIfFirst() {
+                        continuation.resume(returning: false)
+                    }
+                default:
+                    break
+                }
+            }
+            connection.start(queue: .global())
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                if resumed.setIfFirst() {
+                    connection.cancel()
+                    continuation.resume(returning: false)
+                }
+            }
+        }
+
+        if isUp {
+            if !isFalkorDBRunning { logger.info("FalkorDB health check passed — marking as running") }
+            isFalkorDBRunning = true
+        } else {
+            isFalkorDBRunning = false
         }
     }
 
@@ -361,5 +433,20 @@ final class PythonManager: ObservableObject {
         let cgcDir = appSupport.appendingPathComponent("CodeGraphContext")
         try? FileManager.default.createDirectory(at: cgcDir, withIntermediateDirectories: true)
         process.currentDirectoryURL = cgcDir
+    }
+}
+
+/// Thread-safe one-shot flag for continuation safety.
+private final class LockedFlag: @unchecked Sendable {
+    private var _done = false
+    private let lock = NSLock()
+
+    /// Returns `true` the first time it's called, `false` thereafter.
+    func setIfFirst() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if _done { return false }
+        _done = true
+        return true
     }
 }

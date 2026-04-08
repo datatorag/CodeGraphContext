@@ -4,7 +4,7 @@ Welcome to the CodeGraphContext source code! This guide is designed to help new 
 
 ## Root Directory Structure
 
-The root directory contains important configuration files for packaging, testing, and Docker:
+The root directory contains important configuration files for packaging, testing, and deployment:
 
 - `.cgcignore` - The internal tool exclusion file (acts like `.gitignore`) which skips un-indexable items.
 - `.env.example` - Template for environment variables (like Neo4j credentials, debug modes).

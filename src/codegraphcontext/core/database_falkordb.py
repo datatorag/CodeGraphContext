@@ -123,7 +123,7 @@ class FalkorDBManager:
         if platform.system() == "Windows":
             raise RuntimeError(
                 "CodeGraphContext uses redislite/FalkorDB, which does not support Windows.\n"
-                "Please run the project using WSL or Docker."
+                "Please run the project using WSL."
             )
         
         if self._driver is None:
@@ -179,7 +179,7 @@ class FalkorDBManager:
         if platform.system() == "Windows":
             raise RuntimeError(
                 "CodeGraphContext uses redislite/FalkorDB, which does not support Windows.\n"
-                "Please run the project using WSL or Docker."
+                "Please run the project using WSL."
             )
         
         # 1. Try to connect first (maybe running from previous session or other process)

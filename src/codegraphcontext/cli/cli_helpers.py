@@ -378,12 +378,25 @@ from ..viz.server import run_server, set_db_manager
 
 def visualize_helper(repo_path: Optional[str] = None, port: int = 47322, context: Optional[str] = None):
     """"Generates an interactive visualization using the Playground UI."""
-    services = _initialize_services(context)
-    if not all(services[:3]):
+    # The viz server only needs a database connection for reading — skip full
+    # service initialization (which creates a GraphBuilder that runs CREATE
+    # CONSTRAINT / INDEX statements that can disrupt FalkorDB graph state).
+    ensure_first_run_bootstrap()
+    console.print("[dim]Resolving context...[/dim]")
+    ctx = resolve_context(context)
+
+    console.print("[dim]Initializing database connection...[/dim]")
+    try:
+        if ctx.database:
+            os.environ['CGC_RUNTIME_DB_TYPE'] = ctx.database
+        db_manager = get_database_manager(db_path=ctx.db_path)
+        db_manager.get_driver()
+    except Exception as e:
+        console.print(f"[bold red]Database Connection Error:[/bold red] {e}")
         return
 
-    db_manager, _, _, ctx = services
-    
+    console.print("[dim]Services initialized.[/dim]")
+
     # Set the DB manager for the server
     set_db_manager(db_manager)
     

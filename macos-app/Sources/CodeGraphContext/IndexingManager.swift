@@ -26,7 +26,7 @@ final class IndexingManager: ObservableObject {
 
         do {
             _ = try await callTool("add_code_to_graph", arguments: [
-                "repo_path": path
+                "path": path
             ])
             logger.info("Indexing complete for \(repoName)")
 
@@ -44,7 +44,7 @@ final class IndexingManager: ObservableObject {
 
     func refreshRepositories() async {
         do {
-            let result = try await callTool("list_repos", arguments: [:])
+            let result = try await callTool("list_indexed_repositories", arguments: [:])
             // Parse the response — the tool returns content with repo information
             if let repos = parseRepoList(from: result) {
                 indexedRepositories = repos

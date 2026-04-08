@@ -108,7 +108,7 @@ These ideas are consolidated from the legacy `IDEAL_TEST_PLAN.md`.
 *   **Idea**: Instead of asserting specific keys, verify the entire JSON output of a parser against a stored "snapshot". This makes updating parser tests much faster when schema changes.
 
 ### 4. Testcontainers Integration
-*   **Idea**: In E2E tests, spin up a real Docker container for Neo4j/FalkorDB to guarantee 100% accurate database behavior, removing all mocks.
+*   **Idea**: In E2E tests, spin up a real Neo4j Docker container or a standalone FalkorDB binary to guarantee 100% accurate database behavior, removing all mocks.
 
 ### 5. Multi-Repo Analysis Workflows
 *   **Idea**: E2E tests simulating a user querying calls *across* two different repositories (microservices scenario).

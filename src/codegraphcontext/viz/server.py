@@ -31,11 +31,23 @@ def set_db_manager(manager: DatabaseManager):
     global db_manager
     db_manager = manager
 
+def _get_falkordb_graph():
+    """Get a direct FalkorDB graph connection (bypasses wrapper caching issues)."""
+    host = os.environ.get('FALKORDB_HOST', 'localhost')
+    port = int(os.environ.get('FALKORDB_PORT', '6379'))
+    graph_name = os.environ.get('FALKORDB_GRAPH_NAME', 'codegraph')
+    try:
+        from falkordb import FalkorDB
+        db = FalkorDB(host=host, port=port)
+        return db.select_graph(graph_name)
+    except Exception:
+        return None
+
 @app.get("/api/graph")
 async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str] = None):
     if not db_manager:
         raise HTTPException(status_code=500, detail="Database not initialized")
-    
+
     def get_eid(element):
         if element is None: return None
         if isinstance(element, (int, str)):
@@ -72,166 +84,159 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
         nodes_dict = {}
         edges = []
 
-        print(f"DEBUG: Starting get_graph with repo_path={repo_path}", flush=True)
+        print(f"DEBUG: Starting get_graph with repo_path={repo_path}", file=sys.stderr, flush=True)
 
-        with db_manager.get_driver().session() as session:
-            if cypher_query:
-                print(f"DEBUG: Executing custom query: {cypher_query}", flush=True)
-                result = session.run(cypher_query)
-            elif repo_path:
-                repo_path = str(Path(repo_path).resolve())
-                print(f"DEBUG: Fetching subgraph for: {repo_path}", flush=True)
-                query = """
-                MATCH (r:Repository {path: $repo_path})
-                OPTIONAL MATCH (r)-[:CONTAINS*0..]->(n)
-                WITH DISTINCT n
-                WHERE n IS NOT NULL
-                OPTIONAL MATCH (n)-[rel]->(m)
-                RETURN n, rel, m
-                """
-                result = session.run(query, repo_path=repo_path)
-            else:
-                print("DEBUG: Fetching global graph", flush=True)
-                query = "MATCH (n) OPTIONAL MATCH (n)-[rel]->(m) RETURN n, rel, m LIMIT 50000"
-                result = session.run(query)
+        # Try direct FalkorDB connection first (avoids wrapper caching issues)
+        direct_graph = _get_falkordb_graph()
+        use_direct = direct_graph is not None and not cypher_query and not repo_path
 
-            record_count = 0
-            for record in result:
-                record_count += 1
-                # Use .get() to avoid KeyError if the query doesn't return all fields (n, rel, m)
-                for key in ['n', 'm']:
-                    try:
-                        node = record.get(key)
-                        if node:
-                            eid = get_eid(node)
-                            if eid and eid not in nodes_dict:
-                                # Extract labels
-                                labels = []
-                                if isinstance(node, dict):
-                                    # KuzuDB node label is under '_label'
-                                    if '_label' in node:
-                                        labels = [node['_label']]
-                                    elif 'label' in node:
-                                        labels = [node['label']]
-                                else:
-                                    for label_attr in ['_labels', 'labels']:
-                                        if hasattr(node, label_attr):
-                                            attr_val = getattr(node, label_attr)
-                                            if attr_val:
-                                                labels = list(attr_val)
-                                                break
-                                
-                                # Extract properties
-                                props = {}
-                                if isinstance(node, dict):
-                                    props = {k: v for k, v in node.items() if not k.startswith('_')}
-                                else:
-                                    for prop_attr in ['properties', '_properties']:
-                                        if hasattr(node, prop_attr):
-                                            attr_val = getattr(node, prop_attr)
-                                            if attr_val:
-                                                props = dict(attr_val)
-                                                break
-                                                
-                                    # Fallback if props still empty but node acts like dict
-                                    if not props and hasattr(node, 'items'):
-                                        try:
-                                            props = dict(node.items())
-                                        except: pass
-                                
-                                # Extract name/label for frontend
-                                # Prefer 'name' property, fallback to 'label', then 'path' or 'Unknown'
-                                display_name = str(props.get('name', props.get('label', props.get('path', 'Unknown'))))
-                                
-                                nodes_dict[eid] = {
-                                    "id": eid,
-                                    "name": display_name,
-                                    "label": display_name,
-                                    "type": str(labels[0]).capitalize() if labels else "Other",
-                                    "file": str(props.get('path', props.get('file', ''))),
-                                    "val": 4 if (labels and labels[0] in ['Repository', 'Class', 'Interface', 'Trait']) else 2,
-                                    "properties": props
-                                }
-                    except Exception as e:
-                        print(f"DEBUG: Error parsing node: {e}", file=sys.stderr, flush=True)
+        if use_direct:
+            print("DEBUG: Using direct FalkorDB connection", file=sys.stderr, flush=True)
+            # Structural query: skip Variable/Parameter for a cleaner visualization
+            query = "MATCH (n)-[rel]->(m) WHERE NOT (n:Variable OR n:Parameter) AND NOT (m:Variable OR m:Parameter) RETURN n, rel, m LIMIT 50000"
+            raw_result = direct_graph.query(query)
+            print(f"DEBUG: Direct query returned {len(raw_result.result_set)} records", file=sys.stderr, flush=True)
+
+            for row in raw_result.result_set:
+                n, rel, m = row[0], row[1], row[2]
+                for node in [n, m]:
+                    if node is None:
                         continue
-                
-                try:
-                    rel = record.get('rel')
-                    if rel is not None:
-                        # One-shot debug: print type and keys/attrs of first rel
-                        if not edges:
+                    eid = str(node.id)
+                    if eid not in nodes_dict:
+                        props = node.properties if hasattr(node, 'properties') else {}
+                        labels = list(node.labels) if hasattr(node, 'labels') else []
+                        display_name = str(props.get('name', props.get('label', props.get('path', 'Unknown'))))
+                        nodes_dict[eid] = {
+                            "id": eid,
+                            "name": display_name,
+                            "label": display_name,
+                            "type": str(labels[0]).capitalize() if labels else "Other",
+                            "file": str(props.get('path', props.get('file', ''))),
+                            "val": 4 if (labels and labels[0] in ['Repository', 'Class', 'Interface', 'Trait']) else 2,
+                            "properties": dict(props) if props else {}
+                        }
+                if rel is not None:
+                    edges.append({
+                        "id": str(rel.id),
+                        "source": str(rel.src_node),
+                        "target": str(rel.dest_node),
+                        "type": str(rel.relation).upper()
+                    })
+        else:
+            # Fallback: use the wrapper-based approach
+            with db_manager.get_driver().session() as session:
+                if cypher_query:
+                    print(f"DEBUG: Executing custom query: {cypher_query}", file=sys.stderr, flush=True)
+                    result = session.run(cypher_query)
+                elif repo_path:
+                    repo_path = str(Path(repo_path).resolve())
+                    print(f"DEBUG: Fetching subgraph for: {repo_path}", file=sys.stderr, flush=True)
+                    query = """
+                    MATCH (r:Repository {path: $repo_path})
+                    OPTIONAL MATCH (r)-[:CONTAINS*0..]->(n)
+                    WITH DISTINCT n
+                    WHERE n IS NOT NULL
+                    OPTIONAL MATCH (n)-[rel]->(m)
+                    RETURN n, rel, m
+                    """
+                    result = session.run(query, repo_path=repo_path)
+                else:
+                    query = "MATCH (n) OPTIONAL MATCH (n)-[rel]->(m) RETURN n, rel, m LIMIT 50000"
+                    result = session.run(query)
+
+            if not use_direct:
+                record_count = 0
+                for record in result:
+                    record_count += 1
+                    for key in ['n', 'm']:
+                        try:
+                            node = record.get(key)
+                            if node:
+                                eid = get_eid(node)
+                                if eid and eid not in nodes_dict:
+                                    labels = []
+                                    if isinstance(node, dict):
+                                        if '_label' in node: labels = [node['_label']]
+                                        elif 'label' in node: labels = [node['label']]
+                                    else:
+                                        for label_attr in ['_labels', 'labels']:
+                                            if hasattr(node, label_attr):
+                                                attr_val = getattr(node, label_attr)
+                                                if attr_val:
+                                                    labels = list(attr_val)
+                                                    break
+                                    props = {}
+                                    if isinstance(node, dict):
+                                        props = {k: v for k, v in node.items() if not k.startswith('_')}
+                                    else:
+                                        for prop_attr in ['properties', '_properties']:
+                                            if hasattr(node, prop_attr):
+                                                attr_val = getattr(node, prop_attr)
+                                                if attr_val:
+                                                    props = dict(attr_val)
+                                                    break
+                                        if not props and hasattr(node, 'items'):
+                                            try: props = dict(node.items())
+                                            except: pass
+                                    display_name = str(props.get('name', props.get('label', props.get('path', 'Unknown'))))
+                                    nodes_dict[eid] = {
+                                        "id": eid, "name": display_name, "label": display_name,
+                                        "type": str(labels[0]).capitalize() if labels else "Other",
+                                        "file": str(props.get('path', props.get('file', ''))),
+                                        "val": 4 if (labels and labels[0] in ['Repository', 'Class', 'Interface', 'Trait']) else 2,
+                                        "properties": props
+                                    }
+                        except Exception as e:
+                            continue
+                    try:
+                        rel = record.get('rel')
+                        if rel is not None:
                             if isinstance(rel, dict):
-                                print(f"DEBUG rel (dict): keys={list(rel.keys())}", file=sys.stderr, flush=True)
+                                rid = get_eid(rel)
+                                src = rel.get('_src', rel.get('src_node'))
+                                dst = rel.get('_dst', rel.get('dest_node'))
+                                source = get_eid(src) if src is not None else None
+                                target = get_eid(dst) if dst is not None else None
+                                rel_type = str(rel.get('_label', rel.get('relation', rel.get('type', 'RELATED')))).upper()
                             else:
-                                print(f"DEBUG rel (obj): type={type(rel).__name__}, attrs={[a for a in dir(rel) if not a.startswith('__')]}", file=sys.stderr, flush=True)
+                                rid = get_eid(rel)
+                                start_node = end_node = None
+                                for a in ['start_node', 'src_node', '_src_node']:
+                                    if hasattr(rel, a): start_node = getattr(rel, a); break
+                                for a in ['end_node', 'dest_node', '_dest_node']:
+                                    if hasattr(rel, a): end_node = getattr(rel, a); break
+                                source = get_eid(start_node) if start_node is not None else None
+                                target = get_eid(end_node) if end_node is not None else None
+                                rel_type = "RELATED"
+                                for a in ['type', 'relation', '_relation']:
+                                    if hasattr(rel, a): rel_type = str(getattr(rel, a)).upper(); break
+                            if source and target:
+                                edges.append({"id": rid, "source": source, "target": target, "type": rel_type})
+                    except Exception:
+                        pass
+                print(f"DEBUG: Wrapper path: {record_count} records, {len(nodes_dict)} nodes, {len(edges)} edges", file=sys.stderr, flush=True)
 
-                        # FalkorDB / KuzuDB may return rels as dicts OR objects
-                        if isinstance(rel, dict):
-                            rid = get_eid(rel)
-                            # KuzuDB uses _src and _dst, FalkorDB uses src_node/dest_node
-                            src = rel.get('_src', rel.get('src_node'))
-                            dst = rel.get('_dst', rel.get('dest_node'))
-                            
-                            source = get_eid(src) if src is not None else None
-                            target = get_eid(dst) if dst is not None else None
-                            rel_type = str(rel.get('_label', rel.get('relation', rel.get('type', 'RELATED')))).upper()
-                        else:
-                            rid = get_eid(rel)
-                            start_node = None
-                            end_node = None
-                            for src_attr in ['start_node', 'src_node', '_src_node']:
-                                if hasattr(rel, src_attr):
-                                    start_node = getattr(rel, src_attr)
-                                    break
-                            for dest_attr in ['end_node', 'dest_node', '_dest_node']:
-                                if hasattr(rel, dest_attr):
-                                    end_node = getattr(rel, dest_attr)
-                                    break
-                            source = get_eid(start_node) if start_node is not None else None
-                            target = get_eid(end_node) if end_node is not None else None
-                            rel_type = "RELATED"
-                            for rel_attr in ['type', 'relation', '_relation']:
-                                if hasattr(rel, rel_attr):
-                                    rel_type = str(getattr(rel, rel_attr)).upper()
-                                    break
-
-                        if source and target:
-                            edges.append({
-                                "id": rid,
-                                "source": source,
-                                "target": target,
-                                "type": rel_type
-                            })
-                except Exception as e:
-                    print(f"DEBUG: Error parsing relationship: {e}", file=sys.stderr, flush=True)
-                    pass
-
-        print(f"DEBUG: Processed {record_count} records. extracted {len(nodes_dict)} nodes and {len(edges)} edges.", file=sys.stderr, flush=True)
+        filtered_nodes = nodes_dict
+        filtered_edges = edges
 
         # Build a list of unique file paths from File-type nodes for the tree
         file_paths = []
-        for n in nodes_dict.values():
+        for n in filtered_nodes.values():
             if n.get("file") and str(n.get("type", "")).lower() == "file":
                 file_paths.append(str(n["file"]))
         file_paths = sorted(list(set(file_paths)))
 
-        # Read file contents so the frontend never needs a separate API call
+        # Read file contents on demand via /api/file instead of bundling all at once
         file_contents: dict[str, str] = {}
-        for fp in file_paths:
-            try:
-                with open(fp, "r", encoding="utf-8", errors="replace") as f:
-                    file_contents[fp] = f.read()
-            except Exception:
-                pass
 
         response_data = {
-            "nodes": list(nodes_dict.values()), 
-            "links": edges,
+            "nodes": list(filtered_nodes.values()),
+            "links": filtered_edges,
             "files": file_paths,
             "fileContents": file_contents,
         }
-        
+
         print(f"API SUCCESS: Returning graph with {len(response_data['nodes'])} nodes and {len(response_data['links'])} links.", file=sys.stderr, flush=True)
         return response_data
 

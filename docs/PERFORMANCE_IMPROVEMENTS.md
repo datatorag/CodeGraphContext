@@ -206,15 +206,9 @@ Phases: `parsing` → `node_creation` → `relationship_linking` → `completed`
 | Relationship linking | ~3.5 min | ~28K CALLS + ~1.5K INHERITS edges |
 | **Total** | **9m 15s (555s)** | **Full graph with all node types** |
 
-### Backend Comparison
+### Backend
 
-| Backend | Time | Setup | Stability |
-|---------|------|-------|-----------|
-| **Standalone FalkorDB (bundled)** | **9m 15s** | Bundle redis-server + falkordb.so | Stable |
-| Docker FalkorDB | 12m 16s | `docker run falkordb/falkordb` | Stable |
-| FalkorDB Lite (redislite) | Crashed | `pip install falkordblite` | Unstable (wrapper bug) |
-
-The standalone binary is 25% faster than Docker (no container/TCP overhead) and avoids the redislite wrapper bug that caused FalkorDB Lite crashes. It uses the exact same `redis-server` + `falkordb.so` binaries — the Mac app manages the process directly via Swift.
+**Standalone FalkorDB** (bundled `redis-server` + `falkordb.so`, ARM64 macOS) — managed directly by the Mac app as a subprocess. No external dependencies required.
 
 ### CALLS Resolver Fix
 
@@ -262,7 +256,7 @@ This was the single biggest performance win — relationship linking went from 1
 
 ## Database Backend
 
-**Standalone FalkorDB** — the Mac app bundles `redis-server` + `falkordb.so` (ARM64 macOS) and manages the process directly via Swift. No Docker, no redislite wrapper, no external dependencies.
+**Standalone FalkorDB** — the Mac app bundles `redis-server` + `falkordb.so` (ARM64 macOS) and manages the process directly via Swift. No external dependencies.
 
 - `redis-server` (2.7MB) + `falkordb.so` (30MB) downloaded via `scripts/bundle-falkordb.sh`
 - ARM64 macOS `falkordb.so` from [FalkorDB releases](https://github.com/FalkorDB/FalkorDB/releases)

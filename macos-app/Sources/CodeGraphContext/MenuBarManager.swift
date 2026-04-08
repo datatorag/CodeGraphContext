@@ -53,9 +53,21 @@ struct MenuBarView: View {
         } else {
             HStack(spacing: 6) {
                 Image(systemName: "circle.fill")
+                    .foregroundColor(appState.pythonManager.isFalkorDBRunning ? .green : .red)
+                    .font(.system(size: 8))
+                Text("FalkorDB")
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "circle.fill")
                     .foregroundColor(appState.pythonManager.isMCPServerRunning ? .green : .red)
                     .font(.system(size: 8))
-                Text(appState.pythonManager.isMCPServerRunning ? "Server Running" : "Server Stopped")
+                Text("MCP Server")
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "circle.fill")
+                    .foregroundColor(appState.pythonManager.isVizServerRunning ? .green : .red)
+                    .font(.system(size: 8))
+                Text("Visualization")
             }
         }
     }

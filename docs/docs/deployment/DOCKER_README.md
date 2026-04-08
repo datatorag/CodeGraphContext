@@ -64,7 +64,7 @@ See `HOSTING_COMPARISON.md` for detailed comparison of 15+ options.
 ## 📦 What's Included
 
 ✅ Multi-stage Dockerfile (optimized for size)
-✅ Docker Compose with FalkorDB Lite & Neo4j
+✅ Docker Compose with Neo4j
 ✅ Kubernetes manifests (production-ready)
 ✅ GitHub Actions (automated builds)
 ✅ Quick-start script (interactive setup)

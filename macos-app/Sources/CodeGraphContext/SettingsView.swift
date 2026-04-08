@@ -51,8 +51,8 @@ struct SettingsView: View {
             }
 
             Section("Database") {
-                LabeledContent("FalkorDB Lite") {
-                    Text("Embedded (no external dependencies)")
+                LabeledContent("FalkorDB") {
+                    Text("Standalone (bundled redis-server + falkordb.so)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
