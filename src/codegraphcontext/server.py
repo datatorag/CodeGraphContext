@@ -92,21 +92,15 @@ class MCPServer:
                   running loop or creates a new one.
             cwd: Working directory used for context resolution. Defaults to Path.cwd().
         """
-        try:
-            ctx = resolve_context(cwd=cwd or Path.cwd())
-            self.resolved_context = ctx
+        ctx = resolve_context(cwd=cwd or Path.cwd())
+        self.resolved_context = ctx
 
-            if not os.environ.get('CGC_RUNTIME_DB_TYPE') and ctx.database:
-                os.environ['CGC_RUNTIME_DB_TYPE'] = ctx.database
-
-            self.db_manager = get_database_manager(db_path=ctx.db_path)
-            self.db_manager.get_driver() 
-        except ValueError as e:
-            raise ValueError(f"Database configuration error: {e}")
+        if not os.environ.get('CGC_RUNTIME_DB_TYPE') and ctx.database:
+            os.environ['CGC_RUNTIME_DB_TYPE'] = ctx.database
 
         # Initialize managers for jobs and file watching.
         self.job_manager = JobManager()
-        
+
         # Get the current event loop to pass to thread-sensitive components like the graph builder.
         if loop is None:
             try:
@@ -116,10 +110,23 @@ class MCPServer:
                 asyncio.set_event_loop(loop)
         self.loop = loop
 
-        # Initialize all the tool handlers, passing them the necessary managers and the event loop.
-        self.graph_builder = GraphBuilder(self.db_manager, self.job_manager, loop)
-        self.code_finder = CodeFinder(self.db_manager)
-        self.code_watcher = CodeWatcher(self.graph_builder, self.job_manager)
+        # Try to connect to the database. If it fails, the server still starts
+        # but tool calls that need the DB will return errors.
+        self.db_manager = None
+        self.graph_builder = None
+        self.code_finder = None
+        self.code_watcher = None
+        self._db_error = None
+
+        try:
+            self.db_manager = get_database_manager(db_path=ctx.db_path)
+            self.db_manager.get_driver()
+            self.graph_builder = GraphBuilder(self.db_manager, self.job_manager, loop)
+            self.code_finder = CodeFinder(self.db_manager)
+            self.code_watcher = CodeWatcher(self.graph_builder, self.job_manager)
+        except Exception as e:
+            self._db_error = str(e)
+            warning_logger(f"Database not available: {e}. Server will start without DB — tool calls will return errors.")
         
         # Define the tool manifest that will be exposed to the AI assistant.
         self._init_tools()
@@ -131,7 +138,9 @@ class MCPServer:
         self.tools = TOOLS
 
     def get_database_status(self) -> dict:
-        """Returns the current connection status of the Neo4j database."""
+        """Returns the current connection status of the database."""
+        if self.db_manager is None:
+            return {"connected": False, "error": self._db_error}
         return {"connected": self.db_manager.is_connected()}
         
 
@@ -212,10 +221,35 @@ class MCPServer:
         return management_handlers.get_repository_stats(self.code_finder, **args)
 
 
+    def _require_db(self) -> Optional[Dict[str, Any]]:
+        """Check if DB is connected. Attempts lazy reconnection. Returns error dict or None."""
+        if self.code_finder is not None:
+            return None  # Already connected
+
+        try:
+            ctx = self.resolved_context
+            self.db_manager = get_database_manager(db_path=ctx.db_path)
+            self.db_manager.get_driver()
+            self.graph_builder = GraphBuilder(self.db_manager, self.job_manager, self.loop)
+            self.code_finder = CodeFinder(self.db_manager)
+            self.code_watcher = CodeWatcher(self.graph_builder, self.job_manager)
+            self._db_error = None
+            info_logger("Database connected (lazy reconnection)")
+            return None
+        except Exception as e:
+            self._db_error = str(e)
+            return {"error": f"Database not connected: {e}. Ensure FalkorDB is running."}
+
     async def handle_tool_call(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Routes a tool call from the AI assistant to the appropriate handler function. 
+        Routes a tool call from the AI assistant to the appropriate handler function.
         """
+        # Tools that don't need DB
+        no_db_tools = {"check_job_status", "list_jobs"}
+        if tool_name not in no_db_tools:
+            db_err = self._require_db()
+            if db_err:
+                return db_err
         tool_map: Dict[str, Coroutine] = {
             "add_package_to_graph": self.add_package_to_graph_tool,
             "find_dead_code": self.find_dead_code_tool,
@@ -251,7 +285,8 @@ class MCPServer:
         """
         # info_logger("MCP Server is running. Waiting for requests...")
         print("MCP Server is running. Waiting for requests...", file=sys.stderr, flush=True)
-        self.code_watcher.start()
+        if self.code_watcher:
+            self.code_watcher.start()
         
         loop = asyncio.get_event_loop()
         while True:
@@ -358,11 +393,17 @@ class MCPServer:
             allow_headers=["*"],
         )
 
-        self.code_watcher.start()
+        if self.code_watcher:
+            self.code_watcher.start()
 
         @http_app.get("/health")
         async def health():
-            return {"status": "ok", "version": _version}
+            db_status = self.get_database_status()
+            return {
+                "status": "ok",
+                "version": _version,
+                "database": db_status,
+            }
 
         @http_app.post("/mcp")
         async def mcp_endpoint(request: Request):
@@ -424,5 +465,7 @@ class MCPServer:
     def shutdown(self):
         """Gracefully shuts down the server and its components."""
         debug_logger("Shutting down server...")
-        self.code_watcher.stop()
-        self.db_manager.close_driver()
+        if self.code_watcher:
+            self.code_watcher.stop()
+        if self.db_manager:
+            self.db_manager.close_driver()
