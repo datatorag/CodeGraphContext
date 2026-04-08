@@ -15,8 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="${1:-${SCRIPT_DIR}/../build/python}"
 VENV_DIR="${SCRIPT_DIR}/../build/venv-staging"
 
-# Python version requirement (FalkorDB Lite requires 3.12+)
-PYTHON_MIN_VERSION="3.12"
+# Python version requirement
+PYTHON_MIN_VERSION="3.10"
 
 echo "=== CodeGraphContext Python Bundler ==="
 echo "Output: ${OUTPUT_DIR}"
@@ -56,25 +56,15 @@ else
     "${VENV_DIR}/bin/pip" install codegraphcontext --quiet
 fi
 
-# Install FalkorDB Lite (embedded — no Docker needed)
-echo "--- Installing FalkorDB Lite ---"
-"${VENV_DIR}/bin/pip" install falkordblite --quiet
-
-# Replace x86-64 falkordb.so with ARM64 macOS build
-echo "--- Patching FalkorDB module for ARM64 macOS ---"
-FALKORDB_SO="${VENV_DIR}/lib/python${PY_VERSION}/site-packages/redislite/bin/falkordb.so"
-if [[ -f "${FALKORDB_SO}" ]]; then
-    FALKORDB_RELEASE_URL="https://github.com/FalkorDB/FalkorDB/releases/latest/download/falkordb-macos-arm64v8.so"
-    echo "Downloading ARM64 macOS FalkorDB module..."
-    curl -sL "${FALKORDB_RELEASE_URL}" -o "${FALKORDB_SO}"
-    echo "Replaced falkordb.so with ARM64 macOS build"
-fi
+# Install FalkorDB client (connects to Docker-based FalkorDB server)
+echo "--- Installing FalkorDB client ---"
+"${VENV_DIR}/bin/pip" install falkordb --quiet
 
 # Verify installations
 echo "--- Verifying ---"
 "${VENV_DIR}/bin/python" -c "import codegraphcontext; print(f'CGC version: {codegraphcontext.__version__}')" 2>/dev/null || \
     echo "WARNING: codegraphcontext import check failed (may need __version__ attribute)"
-"${VENV_DIR}/bin/python" -c "from redislite.falkordb_client import FalkorDB; print('FalkorDB Lite: OK')"
+"${VENV_DIR}/bin/python" -c "import falkordb; print('FalkorDB client: OK')"
 
 # Copy to output directory
 echo "--- Copying to output ---"

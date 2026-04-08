@@ -51,13 +51,10 @@ struct SettingsView: View {
             }
 
             Section("Database") {
-                LabeledContent("FalkorDB Path") {
-                    Text(falkorDBPath)
+                LabeledContent("FalkorDB") {
+                    Text("Docker container on localhost:6379")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                        .textSelection(.enabled)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
                 }
             }
         }
@@ -167,12 +164,5 @@ struct SettingsView: View {
     private func removeAutoIndexPath(_ path: String) {
         autoIndexPaths.removeAll { $0 == path }
         saveAutoIndexPaths()
-    }
-
-    // MARK: - Computed
-
-    private var falkorDBPath: String {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("CodeGraphContext/falkordb.db").path
     }
 }

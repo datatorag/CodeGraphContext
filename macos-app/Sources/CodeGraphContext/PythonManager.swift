@@ -40,19 +40,16 @@ final class PythonManager: ObservableObject {
         return false
     }
 
-    // MARK: - FalkorDB Configuration
+    // MARK: - FalkorDB Docker Configuration
 
-    var falkorDBPath: String {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let cgcDir = appSupport.appendingPathComponent("CodeGraphContext")
-        // Ensure directory exists
-        try? FileManager.default.createDirectory(at: cgcDir, withIntermediateDirectories: true)
-        return cgcDir.appendingPathComponent("falkordb.db").path
-    }
+    let falkorDBContainerName = "cgc-falkordb"
+    let falkorDBPort = 6379
 
     // MARK: - Lifecycle
 
     func startAll() {
+        ensureFalkorDBRunning()
+
         startMCPServer()
         startVizServer()
         startHealthChecks()
@@ -243,13 +240,92 @@ final class PythonManager: ObservableObject {
         }
     }
 
+    // MARK: - FalkorDB Docker Management
+
+    private func ensureFalkorDBRunning() {
+        // Check if Docker is available
+        guard let dockerPath = findExecutable("docker") else {
+            logger.error("Docker not found. Install Docker Desktop to use CodeGraphContext.")
+            return
+        }
+
+        // Check if container exists and is running
+        let checkProcess = Process()
+        checkProcess.executableURL = URL(fileURLWithPath: dockerPath)
+        checkProcess.arguments = ["inspect", "-f", "{{.State.Running}}", falkorDBContainerName]
+        let checkPipe = Pipe()
+        checkProcess.standardOutput = checkPipe
+        checkProcess.standardError = Pipe()
+
+        do {
+            try checkProcess.run()
+            checkProcess.waitUntilExit()
+            let output = String(data: checkPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if output == "true" {
+                logger.info("FalkorDB container is already running")
+                return
+            }
+
+            // Container exists but stopped — start it
+            if checkProcess.terminationStatus == 0 {
+                logger.info("Starting existing FalkorDB container...")
+                let startProcess = Process()
+                startProcess.executableURL = URL(fileURLWithPath: dockerPath)
+                startProcess.arguments = ["start", falkorDBContainerName]
+                try startProcess.run()
+                startProcess.waitUntilExit()
+                logger.info("FalkorDB container started")
+                return
+            }
+        } catch {
+            logger.warning("Failed to check FalkorDB container: \(error)")
+        }
+
+        // Container doesn't exist — create and start it
+        logger.info("Creating FalkorDB container...")
+        let runProcess = Process()
+        runProcess.executableURL = URL(fileURLWithPath: dockerPath)
+        runProcess.arguments = [
+            "run", "-d",
+            "--name", falkorDBContainerName,
+            "-p", "\(falkorDBPort):6379",
+            "--restart", "unless-stopped",
+            "falkordb/falkordb:latest"
+        ]
+        runProcess.standardError = Pipe()
+
+        do {
+            try runProcess.run()
+            runProcess.waitUntilExit()
+            if runProcess.terminationStatus == 0 {
+                logger.info("FalkorDB container created and started on port \(self.falkorDBPort)")
+            } else {
+                logger.error("Failed to create FalkorDB container (exit \(runProcess.terminationStatus))")
+            }
+        } catch {
+            logger.error("Failed to run Docker: \(error)")
+        }
+    }
+
+    private func findExecutable(_ name: String) -> String? {
+        let paths = [
+            "/usr/local/bin/\(name)",
+            "/opt/homebrew/bin/\(name)",
+            "/usr/bin/\(name)",
+            "\(FileManager.default.homeDirectoryForCurrentUser.path)/.docker/bin/\(name)",
+        ]
+        return paths.first { FileManager.default.fileExists(atPath: $0) }
+    }
+
     // MARK: - Process Configuration
 
     private func configureProcess(_ process: Process) {
         var env = ProcessInfo.processInfo.environment
-        // Database configuration — embedded FalkorDB Lite (no external dependencies)
-        env["CGC_RUNTIME_DB_TYPE"] = "falkordb"
-        env["FALKORDB_PATH"] = falkorDBPath
+        // Database configuration — FalkorDB via Docker on localhost
+        env["CGC_RUNTIME_DB_TYPE"] = "falkordb-remote"
+        env["FALKORDB_HOST"] = "localhost"
+        env["FALKORDB_PORT"] = String(falkorDBPort)
 
         // In dev mode, GUI processes don't inherit the shell PATH.
         // Append common locations where pip/pyenv/Homebrew install binaries.
