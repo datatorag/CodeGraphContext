@@ -34,7 +34,7 @@ fi
 echo "Downloading FalkorDB module (ARM64 macOS)..."
 curl -sL "${FALKORDB_MODULE_URL}" -o "${OUTPUT_DIR}/falkordb.so"
 
-chmod +x "${OUTPUT_DIR}/redis-server"
+chmod +x "${OUTPUT_DIR}/redis-server" "${OUTPUT_DIR}/falkordb.so"
 
 # Verify
 echo ""

@@ -1,6 +1,11 @@
 import Foundation
 import os
 
+struct StandardError: TextOutputStream {
+    static var shared = StandardError()
+    mutating func write(_ string: String) { FileHandle.standardError.write(Data(string.utf8)) }
+}
+
 /// Manages the lifecycle of the bundled Python CGC MCP server and visualization server.
 @MainActor
 final class PythonManager: ObservableObject {
@@ -45,48 +50,22 @@ final class PythonManager: ObservableObject {
 
     // MARK: - FalkorDB Bundled Server
 
-    /// Path to bundled redis-server binary (in app bundle or dev build)
-    var redisServerPath: String? {
-        // 1. App bundle
-        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("falkordb/redis-server").path,
-           FileManager.default.fileExists(atPath: bundled) {
-            return bundled
-        }
-        // 2. Dev build directory (from bundle-falkordb.sh)
-        let devPath = URL(fileURLWithPath: #file)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("build/falkordb/redis-server").path
-        if FileManager.default.fileExists(atPath: devPath) {
-            return devPath
-        }
-        // 3. From falkordblite pip package (dev fallback)
+    /// Find a FalkorDB binary by searching known locations.
+    private func findBinary(_ name: String) -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let pipPath = "\(home)/.pyenv/versions/3.12.4/lib/python3.12/site-packages/redislite/bin/redis-server"
-        if FileManager.default.fileExists(atPath: pipPath) {
-            return pipPath
-        }
-        return nil
+        let candidates = [
+            // 1. App bundle (production)
+            Bundle.main.resourceURL?.appendingPathComponent("falkordb/\(name)").path ?? "",
+            // 2. Dev build output (run scripts/bundle-falkordb.sh first)
+            "\(home)/git/CodeGraphContext/macos-app/build/falkordb/\(name)",
+            // 3. falkordblite pip package (last resort)
+            "\(home)/.pyenv/versions/3.12.4/lib/python3.12/site-packages/redislite/bin/\(name)",
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 
-    /// Path to bundled falkordb.so module
-    var falkorDBModulePath: String? {
-        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("falkordb/falkordb.so").path,
-           FileManager.default.fileExists(atPath: bundled) {
-            return bundled
-        }
-        let devPath = URL(fileURLWithPath: #file)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("build/falkordb/falkordb.so").path
-        if FileManager.default.fileExists(atPath: devPath) {
-            return devPath
-        }
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let pipPath = "\(home)/.pyenv/versions/3.12.4/lib/python3.12/site-packages/redislite/bin/falkordb.so"
-        if FileManager.default.fileExists(atPath: pipPath) {
-            return pipPath
-        }
-        return nil
-    }
+    var redisServerPath: String? { findBinary("redis-server") }
+    var falkorDBModulePath: String? { findBinary("falkordb.so") }
 
     /// Data directory for FalkorDB persistence
     var falkorDBDataDir: URL {
@@ -104,9 +83,12 @@ final class PythonManager: ObservableObject {
 
     func startAll() {
         startFalkorDB()
-        startMCPServer()
-        startVizServer()
-        startHealthChecks()
+        // Give FalkorDB 2s to initialize before starting CGC (which connects on startup)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.startMCPServer()
+            self?.startVizServer()
+            self?.startHealthChecks()
+        }
     }
 
     func stopAll() {
@@ -125,23 +107,23 @@ final class PythonManager: ObservableObject {
             return
         }
 
-        logger.info("Starting FalkorDB server...")
+        logger.info("Starting FalkorDB server at \(serverPath)")
 
-        // Remove stale socket
+        // Ensure data directory exists (redis-server validates --dir on startup)
+        try? FileManager.default.createDirectory(at: falkorDBDataDir, withIntermediateDirectories: true)
         try? FileManager.default.removeItem(atPath: falkorDBSocketPath)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: serverPath)
         process.arguments = [
             "--loadmodule", modulePath,
-            "--unixsocket", falkorDBSocketPath,
-            "--unixsocketperm", "700",
             "--port", String(falkorDBPort),
             "--dir", falkorDBDataDir.path,
             "--dbfilename", "dump.rdb",
-            "--save", "900", "1",      // Save to disk every 15min if >=1 change
-            "--save", "300", "100",    // Save every 5min if >=100 changes
-            "--loglevel", "warning",
+            "--save", "900", "1",
+            "--save", "300", "100",
+            "--daemonize", "no",
+            "--loglevel", "notice",
         ]
         process.standardOutput = Pipe()
         process.standardError = Pipe()
@@ -158,17 +140,7 @@ final class PythonManager: ObservableObject {
             try process.run()
             falkorDBProcess = process
             isFalkorDBRunning = true
-            logger.info("FalkorDB started (PID \(process.processIdentifier))")
-
-            // Wait for socket to appear
-            for _ in 0..<40 {
-                if FileManager.default.fileExists(atPath: falkorDBSocketPath) {
-                    logger.info("FalkorDB socket ready at \(self.falkorDBSocketPath)")
-                    return
-                }
-                Thread.sleep(forTimeInterval: 0.5)
-            }
-            logger.error("FalkorDB socket did not appear within 20s")
+            logger.info("FalkorDB started (PID \(process.processIdentifier)), port \(self.falkorDBPort)")
         } catch {
             logger.error("Failed to start FalkorDB: \(error)")
         }
