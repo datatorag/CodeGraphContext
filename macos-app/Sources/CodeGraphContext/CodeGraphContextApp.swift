@@ -9,7 +9,12 @@ struct CodeGraphContextApp: App {
         MenuBarExtra {
             MenuBarView(appState: appState)
         } label: {
-            Label("CodeGraphContext", systemImage: "circle.grid.3x3.fill")
+            HStack(spacing: 2) {
+                Image(systemName: "circle.grid.3x3.fill")
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 6))
+                    .foregroundColor(menuBarDotColor)
+            }
         }
         .menuBarExtraStyle(.menu)
 
@@ -21,6 +26,18 @@ struct CodeGraphContextApp: App {
         Settings {
             SettingsView()
         }
+    }
+
+    /// Green: all services healthy. Yellow: indexing. Red: FalkorDB or MCP down.
+    private var menuBarDotColor: Color {
+        if appState.indexingManager.isIndexing {
+            return .yellow
+        }
+        let pm = appState.pythonManager
+        if pm.isFalkorDBRunning && pm.isMCPServerRunning {
+            return .green
+        }
+        return .red
     }
 }
 

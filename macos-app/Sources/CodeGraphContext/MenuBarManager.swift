@@ -6,19 +6,36 @@ struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        // Status indicator
-        statusSection
+        servicesSection
 
         Divider()
 
+        repositoriesSection
+
+        Divider()
+
+        if appState.indexingManager.isIndexing {
+            indexingProgressSection
+            Divider()
+        }
+
+        if let stats = appState.indexingManager.graphStats {
+            graphStatsSection(stats)
+            Divider()
+        }
+
+        if !appState.indexingManager.activityLog.isEmpty {
+            activitySection
+            Divider()
+        }
+
+        // Bottom actions
         Button("Open Visualization") {
             openWindow(id: "visualization")
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
         }
         .disabled(!appState.pythonManager.isVizServerRunning)
-
-        repositoriesSection
 
         Button("Index Repository...") {
             indexRepository()
@@ -40,35 +57,28 @@ struct MenuBarView: View {
         .keyboardShortcut("q", modifiers: [.command])
     }
 
-    // MARK: - Status
+    // MARK: - Services
 
     @ViewBuilder
-    private var statusSection: some View {
-        if appState.indexingManager.isIndexing, let name = appState.indexingManager.indexingRepoName {
-            HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Indexing \(name)...")
-            }
-        } else {
-            HStack(spacing: 6) {
-                Image(systemName: "circle.fill")
-                    .foregroundColor(appState.pythonManager.isFalkorDBRunning ? .green : .red)
-                    .font(.system(size: 8))
-                Text("FalkorDB")
-            }
-            HStack(spacing: 6) {
-                Image(systemName: "circle.fill")
-                    .foregroundColor(appState.pythonManager.isMCPServerRunning ? .green : .red)
-                    .font(.system(size: 8))
-                Text("MCP Server")
-            }
-            HStack(spacing: 6) {
-                Image(systemName: "circle.fill")
-                    .foregroundColor(appState.pythonManager.isVizServerRunning ? .green : .red)
-                    .font(.system(size: 8))
-                Text("Visualization")
-            }
+    private var servicesSection: some View {
+        serviceRow("FalkorDB", port: appState.pythonManager.falkorDBPort,
+                   isRunning: appState.pythonManager.isFalkorDBRunning)
+        serviceRow("MCP Server", port: appState.pythonManager.mcpPort,
+                   isRunning: appState.pythonManager.isMCPServerRunning)
+        serviceRow("Visualization", port: appState.pythonManager.vizPort,
+                   isRunning: appState.pythonManager.isVizServerRunning)
+    }
+
+    private func serviceRow(_ name: String, port: Int, isRunning: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "circle.fill")
+                .foregroundColor(isRunning ? .green : .red)
+                .font(.system(size: 8))
+            Text("\(name)")
+            Spacer()
+            Text(":\(port)")
+                .foregroundColor(.secondary)
+                .font(.system(.body, design: .monospaced))
         }
     }
 
@@ -76,27 +86,115 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var repositoriesSection: some View {
-        Menu("Indexed Repositories") {
-            if appState.indexingManager.indexedRepositories.isEmpty {
-                Text("No repositories indexed")
-                    .foregroundColor(.secondary)
-            } else {
-                ForEach(appState.indexingManager.indexedRepositories) { repo in
-                    let isWatched = appState.indexingManager.watchedPaths.contains(repo.path)
-                    HStack {
-                        Label(repo.name, systemImage: "folder")
-                        if isWatched {
-                            Image(systemName: "eye")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
+        if appState.indexingManager.indexedRepositories.isEmpty {
+            Text("No repositories indexed")
+                .foregroundColor(.secondary)
+        } else {
+            ForEach(appState.indexingManager.indexedRepositories) { repo in
+                repoMenu(repo)
             }
+        }
+    }
+
+    private func repoMenu(_ repo: IndexedRepository) -> some View {
+        let isWatched = appState.indexingManager.watchedPaths.contains(repo.path)
+
+        return Menu {
+            Text(repo.path)
+                .foregroundColor(.secondary)
 
             Divider()
 
-            Button("Refresh") {
-                Task { await appState.indexingManager.refreshRepositories() }
+            Button("Reindex") {
+                Task { await appState.indexingManager.indexRepository(at: repo.path) }
+            }
+            .disabled(appState.indexingManager.isIndexing)
+
+            if isWatched {
+                Button("Stop Watching") {
+                    Task { await appState.indexingManager.unwatchRepository(at: repo.path) }
+                }
+            } else {
+                Button("Start Watching") {
+                    Task { await appState.indexingManager.watchRepository(at: repo.path) }
+                }
+            }
+
+            Button("Open in Finder") {
+                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: repo.path)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "folder.fill")
+                    .foregroundColor(.accentColor)
+                Text(repo.name)
+                Spacer()
+                if isWatched {
+                    Image(systemName: "eye")
+                        .foregroundColor(.green)
+                        .font(.system(size: 10))
+                }
+            }
+        }
+    }
+
+    // MARK: - Indexing Progress
+
+    @ViewBuilder
+    private var indexingProgressSection: some View {
+        if let name = appState.indexingManager.indexingRepoName {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Indexing \(name)")
+                        .font(.system(.body, weight: .medium))
+                    if let phase = appState.indexingManager.indexingPhase {
+                        HStack(spacing: 4) {
+                            Text(phase.replacingOccurrences(of: "_", with: " "))
+                                .foregroundColor(.secondary)
+                            if let elapsed = appState.indexingManager.indexingElapsed {
+                                Text("(\(elapsed))")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .font(.system(.caption))
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Graph Stats
+
+    private func graphStatsSection(_ stats: GraphStats) -> some View {
+        Menu {
+            Text("\(formatted(stats.files)) files")
+            Text("\(formatted(stats.functions)) functions")
+            Text("\(formatted(stats.classes)) classes")
+            Text("\(formatted(stats.modules)) modules")
+        } label: {
+            HStack {
+                Image(systemName: "chart.bar.fill")
+                Text("Graph: \(formatted(stats.totalNodes)) nodes")
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Activity Feed
+
+    @ViewBuilder
+    private var activitySection: some View {
+        Menu {
+            ForEach(appState.indexingManager.activityLog.prefix(5)) { entry in
+                Text("\(entry.message) \(entry.relativeTime)")
+            }
+        } label: {
+            HStack {
+                Image(systemName: "clock")
+                Text("Recent Activity")
+                    .foregroundColor(.secondary)
             }
         }
     }
@@ -118,5 +216,13 @@ struct MenuBarView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Helpers
+
+    private func formatted(_ n: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 }

@@ -6,8 +6,13 @@ import os
 final class IndexingManager: ObservableObject {
     @Published var isIndexing = false
     @Published var indexingRepoName: String?
+    @Published var indexingPhase: String?
+    @Published var indexingElapsed: String?
+    @Published var indexingJobId: String?
     @Published var indexedRepositories: [IndexedRepository] = []
     @Published var watchedPaths: Set<String> = []
+    @Published var graphStats: GraphStats?
+    @Published var activityLog: [ActivityEntry] = []
 
     private let logger = Logger(subsystem: "com.codegraphcontext.mac", category: "IndexingManager")
 
@@ -23,25 +28,53 @@ final class IndexingManager: ObservableObject {
         let repoName = URL(fileURLWithPath: path).lastPathComponent
         isIndexing = true
         indexingRepoName = repoName
+        indexingPhase = "starting"
+        indexingElapsed = nil
         logger.info("Starting indexing of \(repoName) at \(path)")
+        addActivity("Indexing started for \(repoName)")
 
         do {
-            _ = try await callTool("add_code_to_graph", arguments: [
-                "path": path
-            ])
+            let result = try await callTool("add_code_to_graph", arguments: ["path": path])
+            // Extract job_id for progress tracking
+            if let jobId = extractJobId(from: result) {
+                indexingJobId = jobId
+            }
             logger.info("Indexing complete for \(repoName)")
+            addActivity("Indexing complete for \(repoName)")
 
             // Auto-watch the repo so the graph stays in sync as files change
             await watchRepository(at: path)
 
-            // Refresh the repository list
-            await refreshRepositories()
+            // Refresh stats
+            await refreshAll()
         } catch {
             logger.error("Indexing failed for \(repoName): \(error)")
+            addActivity("Indexing failed for \(repoName)")
         }
 
         isIndexing = false
         indexingRepoName = nil
+        indexingPhase = nil
+        indexingElapsed = nil
+        indexingJobId = nil
+    }
+
+    // MARK: - Job Progress Polling
+
+    func pollJobProgress() async {
+        guard let jobId = indexingJobId else { return }
+        do {
+            let result = try await callTool("check_job_status", arguments: ["job_id": jobId])
+            if let text = extractText(from: result),
+               let data = text.data(using: .utf8),
+               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let job = json["job"] as? [String: Any] {
+                indexingPhase = job["phase"] as? String
+                indexingElapsed = job["elapsed_time_human"] as? String
+            }
+        } catch {
+            // Silently ignore polling errors
+        }
     }
 
     // MARK: - File Watching
@@ -50,6 +83,8 @@ final class IndexingManager: ObservableObject {
         do {
             _ = try await callTool("watch_directory", arguments: ["path": path])
             watchedPaths.insert(path)
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            addActivity("Watch started for \(name)")
             logger.info("Auto-watching \(path) for changes")
         } catch {
             logger.error("Failed to watch \(path): \(error)")
@@ -60,6 +95,8 @@ final class IndexingManager: ObservableObject {
         do {
             _ = try await callTool("unwatch_directory", arguments: ["path": path])
             watchedPaths.remove(path)
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            addActivity("Watch stopped for \(name)")
             logger.info("Stopped watching \(path)")
         } catch {
             logger.error("Failed to unwatch \(path): \(error)")
@@ -70,7 +107,6 @@ final class IndexingManager: ObservableObject {
         for path in watchedPaths {
             do {
                 _ = try await callTool("unwatch_directory", arguments: ["path": path])
-                logger.info("Unwatched \(path) on shutdown")
             } catch {
                 logger.warning("Failed to unwatch \(path) on shutdown: \(error)")
             }
@@ -78,18 +114,51 @@ final class IndexingManager: ObservableObject {
         watchedPaths.removeAll()
     }
 
-    // MARK: - List Repositories
+    // MARK: - Refresh All Data
+
+    func refreshAll() async {
+        await refreshRepositories()
+        await refreshGraphStats()
+    }
 
     func refreshRepositories() async {
         do {
             let result = try await callTool("list_indexed_repositories", arguments: [:])
-            // Parse the response — the tool returns content with repo information
             if let repos = parseRepoList(from: result) {
                 indexedRepositories = repos
             }
-            logger.info("Refreshed repo list: \(self.indexedRepositories.count) repositories")
         } catch {
             logger.error("Failed to list repos: \(error)")
+        }
+    }
+
+    func refreshGraphStats() async {
+        do {
+            let result = try await callTool("get_repository_stats", arguments: ["path": "."])
+            if let text = extractText(from: result),
+               let data = text.data(using: .utf8),
+               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let stats = json["stats"] as? [String: Any] {
+                graphStats = GraphStats(
+                    files: stats["files"] as? Int ?? 0,
+                    functions: stats["functions"] as? Int ?? 0,
+                    classes: stats["classes"] as? Int ?? 0,
+                    modules: stats["modules"] as? Int ?? 0
+                )
+            }
+        } catch {
+            // Stats not critical — silently ignore
+        }
+    }
+
+    // MARK: - Activity Log
+
+    private func addActivity(_ message: String) {
+        let entry = ActivityEntry(message: message, timestamp: Date())
+        activityLog.insert(entry, at: 0)
+        // Keep last 10 entries
+        if activityLog.count > 10 {
+            activityLog = Array(activityLog.prefix(10))
         }
     }
 
@@ -107,7 +176,6 @@ final class IndexingManager: ObservableObject {
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder().encode(request)
-        // Indexing can take a long time for large repos
         urlRequest.timeoutInterval = 600
 
         let (data, response) = try await URLSession.shared.data(for: urlRequest)
@@ -120,30 +188,62 @@ final class IndexingManager: ObservableObject {
         return try JSONDecoder().decode(JSONRPCResponse.self, from: data)
     }
 
-    private func parseRepoList(from response: JSONRPCResponse) -> [IndexedRepository]? {
-        guard let content = response.result?["content"] else { return nil }
+    // MARK: - Response Parsing
 
-        // The MCP tool response content is an array of content blocks
-        // Try to extract repo names from text content
-        if case .array(let items) = content {
-            var repos: [IndexedRepository] = []
-            for item in items {
-                if case .object(let obj) = item,
-                   case .string(let text)? = obj["text"] {
-                    // Parse repo entries from the text response
-                    for line in text.components(separatedBy: "\n") {
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
-                        if !trimmed.isEmpty && !trimmed.hasPrefix("#") {
-                            let name = URL(fileURLWithPath: trimmed).lastPathComponent
-                            repos.append(IndexedRepository(name: name.isEmpty ? trimmed : name, path: trimmed))
-                        }
-                    }
-                }
+    private func extractText(from response: JSONRPCResponse) -> String? {
+        guard let content = response.result?["content"],
+              case .array(let items) = content else { return nil }
+        for item in items {
+            if case .object(let obj) = item,
+               case .string(let text)? = obj["text"] {
+                return text
             }
-            return repos.isEmpty ? nil : repos
         }
-
         return nil
+    }
+
+    private func extractJobId(from response: JSONRPCResponse) -> String? {
+        guard let text = extractText(from: response),
+              let data = text.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return json["job_id"] as? String
+    }
+
+    private func parseRepoList(from response: JSONRPCResponse) -> [IndexedRepository]? {
+        guard let text = extractText(from: response),
+              let data = text.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let repos = json["repositories"] as? [[String: Any]] else { return nil }
+
+        let result = repos.map { repo in
+            let path = repo["path"] as? String ?? ""
+            let name = repo["name"] as? String ?? URL(fileURLWithPath: path).lastPathComponent
+            return IndexedRepository(name: name, path: path)
+        }
+        return result.isEmpty ? nil : result
+    }
+}
+
+// MARK: - Data Types
+
+struct GraphStats {
+    let files: Int
+    let functions: Int
+    let classes: Int
+    let modules: Int
+
+    var totalNodes: Int { files + functions + classes + modules }
+}
+
+struct ActivityEntry: Identifiable {
+    let id = UUID()
+    let message: String
+    let timestamp: Date
+
+    var relativeTime: String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: timestamp, relativeTo: Date())
     }
 }
 
