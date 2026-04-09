@@ -980,108 +980,88 @@ class GraphBuilder:
     def _resolve_function_call(self, call: Dict, caller_file_path: str, local_names: set, local_imports: dict, imports_map: dict, skip_external: bool) -> Optional[Dict]:
         """Resolve a single function call to its target. Returns a dict with call params or None if skipped.
 
-        Resolution strategy (strict — only create edges we're confident about):
-        1. self/this/super/cls calls → same file
-        2. Name defined locally in this file → same file
-        3. Inferred object type → look up in imports_map
-        4. Name imported in this file → resolve via import path
-        5. Name exists in exactly one file in the repo → unambiguous
-        6. Otherwise → skip (don't create spurious edges)
+        Resolution strategy — precision over recall.  The graph supplements
+        Claude Code (which can grep); we only create edges we're confident
+        about so the graph never sends Claude down wrong paths.
+
+        Rules:
+        1. self/this/super/cls.method() → same file (always safe)
+        2. Direct call func() where func is defined in this file → same file
+        3. Direct call func() where func is explicitly imported → resolve via import
+        4. Dotted call module.func() where module is imported → resolve func within module
+        5. Everything else → skip (let Claude grep if needed)
+
+        Key constraint: for obj.method() calls, if obj is NOT an imported
+        module name, we skip. We can't know the type of a local variable,
+        so any resolution would be a guess (e.g. dict.get vs controller.get).
         """
         called_name = call['name']
-        if called_name in __builtins__:
-            return None
-        # Skip single/two-char names — these are minified JS artifacts (a, i, t, e, etc.)
-        if len(called_name) <= 2:
+        # Skip builtins and very short names (minified JS)
+        if called_name in __builtins__ or len(called_name) <= 2:
             return None
 
         resolved_path = None
         full_call = call.get('full_name', called_name)
         base_obj = full_call.split('.')[0] if '.' in full_call else None
+        is_dotted = base_obj is not None
+        is_self_call = base_obj in ('self', 'this', 'super', 'super()', 'cls', '@')
 
-        is_chained_call = full_call.count('.') > 1 if '.' in full_call else False
-
-        if is_chained_call and base_obj in ('self', 'this', 'super', 'super()', 'cls', '@'):
-            lookup_name = called_name
-        else:
-            lookup_name = base_obj if base_obj else called_name
-
-        # 1. self/this/super/cls → same file
-        if base_obj in ('self', 'this', 'super', 'super()', 'cls', '@') and not is_chained_call:
+        # --- Rule 1: self/this/super/cls → same file ---
+        if is_self_call:
             resolved_path = caller_file_path
 
-        # 2. Locally defined name → same file
-        elif lookup_name in local_names:
+        # --- Rule 2: Direct call to locally defined name → same file ---
+        # Only for non-dotted calls (func(), not obj.func())
+        elif not is_dotted and called_name in local_names:
             resolved_path = caller_file_path
 
-        # 3. Inferred object type → imports_map
-        elif call.get('inferred_obj_type'):
-            obj_type = call['inferred_obj_type']
-            possible_paths = imports_map.get(obj_type, [])
-            if len(possible_paths) == 1:
-                resolved_path = possible_paths[0]
-
-        # 4. Name imported in this file → resolve via import
-        if not resolved_path and lookup_name in local_imports:
-            full_import_name = local_imports[lookup_name]
-            # 4a. For dotted calls (module.func), resolve called_name within the
-            #     module's directory.  e.g. user_service.authenticate() where
-            #     user_service → webapp.services.user → find 'authenticate' in
-            #     files under webapp/services/user/.
-            if base_obj and called_name != lookup_name:
-                module_path_fragment = full_import_name.replace('.', '/')
-                candidate_paths = imports_map.get(called_name, [])
-                for p in candidate_paths:
-                    if module_path_fragment in p:
-                        resolved_path = p
-                        break
-                # Also try: the module's __init__.py re-exports from a submodule,
-                # so the function is in any file under the module directory.
-                if not resolved_path and candidate_paths:
-                    # If exactly one candidate contains the module prefix, use it
-                    module_prefix_matches = [p for p in candidate_paths
-                                             if module_path_fragment.split('/')[-1] in p]
-                    if len(module_prefix_matches) == 1:
-                        resolved_path = module_prefix_matches[0]
-
-            # 4b. Direct match: lookup_name itself is a function/class in imports_map
+        # --- Rule 3: Direct call to imported name → resolve via import ---
+        # func() where func is in local_imports
+        elif not is_dotted and called_name in local_imports:
+            full_import_name = local_imports[called_name]
+            # 3a. Direct match in imports_map by full import name
+            if full_import_name in imports_map:
+                direct_paths = imports_map[full_import_name]
+                if len(direct_paths) == 1:
+                    resolved_path = direct_paths[0]
+            # 3b. Match by name in imports_map, filter by module path
             if not resolved_path:
-                if full_import_name in imports_map:
-                    direct_paths = imports_map[full_import_name]
-                    if direct_paths and len(direct_paths) == 1:
-                        resolved_path = direct_paths[0]
-            # 4c. Match import module path against file paths.
-            #     For "from nativo_mcp.tools import call_controller",
-            #     full_import_name = "nativo_mcp.tools.call_controller".
-            #     The module path is "nativo_mcp/tools" (strip the function name).
-            if not resolved_path:
-                possible_paths = imports_map.get(lookup_name, [])
-                # Strip function/class name from import path to get module path
+                possible_paths = imports_map.get(called_name, [])
                 import_parts = full_import_name.replace('.', '/').rsplit('/', 1)
                 module_path = import_parts[0] if len(import_parts) > 1 else full_import_name.replace('.', '/')
                 for p in possible_paths:
                     if module_path in p:
                         resolved_path = p
                         break
+            # 3c. Unambiguous: name defined in exactly one file
+            if not resolved_path:
+                possible_paths = imports_map.get(called_name, [])
+                if len(possible_paths) == 1:
+                    resolved_path = possible_paths[0]
 
-        # 5. Dotted call where base_obj is an imported module: look up called_name
-        #    directly in imports_map (handles 'from X import Y as alias; alias.func()')
-        if not resolved_path and base_obj and called_name != lookup_name:
+        # --- Rule 4: Dotted call module.func() where module is imported ---
+        # obj.method() is ONLY resolved when obj is a known import (module).
+        # If obj is a local variable (dict, model instance, etc.), skip.
+        elif is_dotted and not is_self_call and base_obj in local_imports:
+            full_import_name = local_imports[base_obj]
+            module_path_fragment = full_import_name.replace('.', '/')
             candidate_paths = imports_map.get(called_name, [])
-            if len(candidate_paths) == 1 and lookup_name in local_imports:
+            # 4a. Find called_name in files under the imported module's path
+            for p in candidate_paths:
+                if module_path_fragment in p:
+                    resolved_path = p
+                    break
+            # 4b. Try matching module's last component (package name)
+            if not resolved_path and candidate_paths:
+                module_last = module_path_fragment.split('/')[-1]
+                module_matches = [p for p in candidate_paths if module_last in p]
+                if len(module_matches) == 1:
+                    resolved_path = module_matches[0]
+            # 4c. If called_name is unambiguous (1 definition) and base is imported, use it
+            if not resolved_path and len(candidate_paths) == 1:
                 resolved_path = candidate_paths[0]
 
-        # 6. Unambiguous: name exists in exactly one file AND is imported by caller
-        if not resolved_path:
-            possible_paths = imports_map.get(lookup_name, [])
-            if len(possible_paths) == 1 and lookup_name in local_imports:
-                resolved_path = possible_paths[0]
-
-        # 7. Final check: called_name (not lookup_name) in local names
-        if not resolved_path and called_name != lookup_name and called_name in local_names:
-            resolved_path = caller_file_path
-
-        # If still unresolved, skip — don't create spurious edges
+        # If still unresolved, skip — don't guess
         if not resolved_path:
             return None
 
