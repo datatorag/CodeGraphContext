@@ -19,6 +19,7 @@ class BaseCallResolver:
     """Shared resolution framework. Subclasses override language-specific behavior."""
 
     SELF_KEYWORDS: frozenset = frozenset()
+    SUPER_KEYWORDS: frozenset = frozenset()  # super() — skipped (can't resolve without type info)
     BUILTIN_NAMES: frozenset = frozenset()
     MIN_NAME_LENGTH: int = 3  # skip <=2 char names (minified JS artifacts)
     IMPORT_PATH_KEY: str = 'full_import_name'  # key in import dicts for module path
@@ -52,11 +53,17 @@ class BaseCallResolver:
         base_obj = full_call.split('.')[0] if '.' in full_call else None
         is_dotted = base_obj is not None
         is_self_call = base_obj in self.SELF_KEYWORDS
+        is_super_call = base_obj in self.SUPER_KEYWORDS
         dot_count = full_call.count('.') if is_dotted else 0
+
+        # Skip super() calls — resolving to same file is wrong (should be parent),
+        # but we can't look up the parent without querying the graph mid-resolution.
+        if is_super_call:
+            return None
 
         resolved_path = None
 
-        # Rule 1: self/this/super.method() → same file
+        # Rule 1: self/this/cls.method() → same file
         # Only single-dot (self.method), not chained (self.attr.method)
         if is_self_call and dot_count == 1:
             resolved_path = caller_file_path
@@ -131,16 +138,9 @@ class BaseCallResolver:
             if module_fragment in p:
                 return p
 
-        # 4b. Match module's last component (package name)
-        module_last = module_fragment.split('/')[-1]
-        matches = [p for p in candidate_paths if module_last in p]
-        if len(matches) == 1:
-            return matches[0]
-
-        # 4c. Unambiguous (1 definition) and base is imported
-        if len(candidate_paths) == 1:
-            return candidate_paths[0]
-
+        # 4b was removed — loose last-component matching caused FPs when
+        # multiple modules export the same name (e.g. get_template_data
+        # in ifu_service vs clp_service). If 4a didn't match, skip.
         return None
 
     def _import_path_to_fs_fragment(self, import_path: str) -> Optional[str]:
@@ -191,14 +191,22 @@ class BaseCallResolver:
 # ---------------------------------------------------------------------------
 
 class PythonCallResolver(BaseCallResolver):
-    SELF_KEYWORDS = frozenset({'self', 'cls', 'super', 'super()'})
-    BUILTIN_NAMES = frozenset(dir(builtins))
+    SELF_KEYWORDS = frozenset({'self', 'cls', '@'})
+    SUPER_KEYWORDS = frozenset({'super', 'super()'})
+    BUILTIN_NAMES = frozenset(dir(builtins)) | frozenset({
+        # unittest.mock / pytest utilities — should never resolve to app code
+        'patch', 'MagicMock', 'Mock', 'PropertyMock', 'AsyncMock',
+        'mock_open', 'sentinel', 'call', 'ANY',
+        'fixture', 'parametrize', 'mark', 'raises', 'warns',
+        'monkeypatch', 'capsys', 'capfd', 'tmpdir', 'tmp_path',
+    })
     IMPORT_PATH_KEY = 'full_import_name'
 
 
 class JavaScriptCallResolver(BaseCallResolver):
     """For JavaScript and TypeScript."""
-    SELF_KEYWORDS = frozenset({'this', 'super'})
+    SELF_KEYWORDS = frozenset({'this'})
+    SUPER_KEYWORDS = frozenset({'super'})
     BUILTIN_NAMES = frozenset({
         'console', 'Math', 'JSON', 'Object', 'Array', 'Promise', 'Error',
         'Date', 'RegExp', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Number',
@@ -247,8 +255,9 @@ class GoCallResolver(BaseCallResolver):
 
 
 class JVMCallResolver(BaseCallResolver):
-    """For Java, Kotlin, Scala. Uses this/super, dotted import paths."""
-    SELF_KEYWORDS = frozenset({'this', 'super'})
+    """For Java, Kotlin, Scala. Uses this, dotted import paths."""
+    SELF_KEYWORDS = frozenset({'this'})
+    SUPER_KEYWORDS = frozenset({'super'})
     BUILTIN_NAMES = frozenset({
         'System', 'String', 'Integer', 'Boolean', 'Double', 'Float',
         'Object', 'Math', 'Collections', 'Arrays', 'Thread', 'Runnable',
@@ -263,7 +272,8 @@ class GenericCallResolver(BaseCallResolver):
     Only resolves same-file calls and directly imported names.
     Rule 4 (dotted calls) is disabled — too risky without language knowledge.
     """
-    SELF_KEYWORDS = frozenset({'self', 'this', 'super'})
+    SELF_KEYWORDS = frozenset({'self', 'this'})
+    SUPER_KEYWORDS = frozenset({'super'})
     BUILTIN_NAMES = frozenset()
     IMPORT_PATH_KEY = 'full_import_name'
 
