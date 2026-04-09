@@ -437,9 +437,13 @@ class TypescriptTreeSitterParser:
                         if arg.type not in ('(', ')', ','):
                             args.append(self._get_node_text(arg))
 
+                # Extract function expression only (not full call with args).
+                func_node = call_node.child_by_field_name('function') if call_node and call_node.type == 'call_expression' else None
+                full_name = self._get_node_text(func_node) if func_node else name
+
                 call_data = {
                     "name": name,
-                    "full_name": self._get_node_text(call_node) if call_node else name,
+                    "full_name": full_name,
                     "line_number": node.start_point[0] + 1,
                     "args": args,
                     "inferred_obj_type": None,

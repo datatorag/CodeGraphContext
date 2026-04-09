@@ -14,6 +14,7 @@ from ..utils.debug_log import debug_log, info_logger, error_logger, warning_logg
 from tree_sitter import Language, Parser
 from ..utils.tree_sitter_manager import get_tree_sitter_manager
 from ..cli.config_manager import get_config_value
+from .call_resolver import get_resolver
 from ..utils.path_ignore import file_path_has_ignore_dir_segment
 import fnmatch
 import json as _json
@@ -976,125 +977,7 @@ class GraphBuilder:
 
             # Class inheritance and function calls are handled in a second pass after all files are processed.
 
-    # Second pass to create relationships that depend on all files being present like call functions and class inheritance
-    def _resolve_function_call(self, call: Dict, caller_file_path: str, local_names: set, local_imports: dict, imports_map: dict, skip_external: bool) -> Optional[Dict]:
-        """Resolve a single function call to its target. Returns a dict with call params or None if skipped.
-
-        Resolution strategy — precision over recall.  The graph supplements
-        Claude Code (which can grep); we only create edges we're confident
-        about so the graph never sends Claude down wrong paths.
-
-        Rules:
-        1. self/this/super/cls.method() → same file (always safe)
-        2. Direct call func() where func is defined in this file → same file
-        3. Direct call func() where func is explicitly imported → resolve via import
-        4. Dotted call module.func() where module is imported → resolve func within module
-        5. Everything else → skip (let Claude grep if needed)
-
-        Key constraint: for obj.method() calls, if obj is NOT an imported
-        module name, we skip. We can't know the type of a local variable,
-        so any resolution would be a guess (e.g. dict.get vs controller.get).
-        """
-        called_name = call['name']
-        # Skip builtins and very short names (minified JS)
-        if called_name in __builtins__ or len(called_name) <= 2:
-            return None
-
-        resolved_path = None
-        full_call = call.get('full_name', called_name)
-        base_obj = full_call.split('.')[0] if '.' in full_call else None
-        is_dotted = base_obj is not None
-        is_self_call = base_obj in ('self', 'this', 'super', 'super()', 'cls', '@')
-
-        # --- Rule 1: self/this/super/cls → same file ---
-        if is_self_call:
-            resolved_path = caller_file_path
-
-        # --- Rule 2: Direct call to locally defined name → same file ---
-        # Only for non-dotted calls (func(), not obj.func())
-        elif not is_dotted and called_name in local_names:
-            resolved_path = caller_file_path
-
-        # --- Rule 3: Direct call to imported name → resolve via import ---
-        # func() where func is in local_imports
-        elif not is_dotted and called_name in local_imports:
-            full_import_name = local_imports[called_name]
-            # 3a. Direct match in imports_map by full import name
-            if full_import_name in imports_map:
-                direct_paths = imports_map[full_import_name]
-                if len(direct_paths) == 1:
-                    resolved_path = direct_paths[0]
-            # 3b. Match by name in imports_map, filter by module path
-            if not resolved_path:
-                possible_paths = imports_map.get(called_name, [])
-                import_parts = full_import_name.replace('.', '/').rsplit('/', 1)
-                module_path = import_parts[0] if len(import_parts) > 1 else full_import_name.replace('.', '/')
-                for p in possible_paths:
-                    if module_path in p:
-                        resolved_path = p
-                        break
-            # 3c. Unambiguous: name defined in exactly one file
-            if not resolved_path:
-                possible_paths = imports_map.get(called_name, [])
-                if len(possible_paths) == 1:
-                    resolved_path = possible_paths[0]
-
-        # --- Rule 4: Dotted call module.func() where module is imported ---
-        # obj.method() is ONLY resolved when obj is a known import (module).
-        # If obj is a local variable (dict, model instance, etc.), skip.
-        elif is_dotted and not is_self_call and base_obj in local_imports:
-            full_import_name = local_imports[base_obj]
-            module_path_fragment = full_import_name.replace('.', '/')
-            candidate_paths = imports_map.get(called_name, [])
-            # 4a. Find called_name in files under the imported module's path
-            for p in candidate_paths:
-                if module_path_fragment in p:
-                    resolved_path = p
-                    break
-            # 4b. Try matching module's last component (package name)
-            if not resolved_path and candidate_paths:
-                module_last = module_path_fragment.split('/')[-1]
-                module_matches = [p for p in candidate_paths if module_last in p]
-                if len(module_matches) == 1:
-                    resolved_path = module_matches[0]
-            # 4c. If called_name is unambiguous (1 definition) and base is imported, use it
-            if not resolved_path and len(candidate_paths) == 1:
-                resolved_path = candidate_paths[0]
-
-        # If still unresolved, skip — don't guess
-        if not resolved_path:
-            return None
-
-        if skip_external and resolved_path != caller_file_path:
-            # Check if this is an external (non-imported) reference
-            if lookup_name not in local_imports and lookup_name not in local_names:
-                return None
-
-        caller_context = call.get('context')
-        if caller_context and len(caller_context) == 3 and caller_context[0] is not None:
-            caller_name, _, caller_line_number = caller_context
-            return {
-                'type': 'function',
-                'caller_name': caller_name,
-                'caller_file_path': caller_file_path,
-                'caller_line_number': caller_line_number,
-                'called_name': called_name,
-                'called_file_path': resolved_path,
-                'line_number': call['line_number'],
-                'args': call.get('args', []),
-                'full_call_name': call.get('full_name', called_name),
-            }
-        else:
-            return {
-                'type': 'file',
-                'caller_file_path': caller_file_path,
-                'called_name': called_name,
-                'called_file_path': resolved_path,
-                'line_number': call['line_number'],
-                'args': call.get('args', []),
-                'full_call_name': call.get('full_name', called_name),
-            }
-
+    # Second pass to create relationships that depend on all files being present
     def _create_all_function_calls(self, all_file_data: list[Dict], imports_map: dict, file_class_lookup: Optional[Dict] = None):
         """Create CALLS relationships using fully label-specific UNWIND queries (V3).
         Both caller AND called sides use specific labels — no OR scans anywhere.
@@ -1130,11 +1013,13 @@ class GraphBuilder:
             func_names = {f['name'] for f in file_data.get('functions', [])}
             class_names = {c['name'] for c in file_data.get('classes', [])}
             local_names = func_names | class_names
-            local_imports = {imp.get('alias') or imp['name'].split('.')[-1]: imp.get('full_import_name', imp['name'])
-                            for imp in file_data.get('imports', [])}
-            
+
+            lang = file_data.get('lang', '')
+            resolver = get_resolver(lang)
+            local_imports = resolver.build_local_imports(file_data.get('imports', []))
+
             for call in file_data.get('function_calls', []):
-                resolved = self._resolve_function_call(
+                resolved = resolver.resolve(
                     call, caller_file_path, local_names, local_imports, imports_map, skip_external
                 )
                 if not resolved:
