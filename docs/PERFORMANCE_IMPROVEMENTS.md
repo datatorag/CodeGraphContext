@@ -1,233 +1,129 @@
-# Indexing Performance Improvements
+# Indexing Performance & Accuracy
 
-> Tracking optimizations to CodeGraphContext's graph indexing pipeline.
-> Benchmark: 76 Python files (CGC `src/` directory, ~880 nodes).
-> Real-world test: RamPump repository (9,382 files, 84,501 nodes).
+> CodeGraphContext graph indexing pipeline — performance benchmarks, accuracy validation, and call resolution design.
 
-## Summary
+## Current Results (RamPump, 5,542 code files)
 
-| Version | DB Write/File | Total (76 files) | DB Round Trips | Key Change |
-|---------|--------------|-------------------|----------------|------------|
-| **v0 (baseline)** | 43.1 ms | 6.37s | ~456 | Per-file MERGE, per-file directory creation |
-| **v1 (dir batch)** | 30.9 ms | 4.64s | ~380 | Batch directory hierarchy creation |
-| **v2 (cross-file batch)** | 25.2 ms | 4.11s | ~12 per flush | Accumulate nodes across files, flush every 100 |
-| **v3 (parse-then-write)** | 26.1 ms | 4.29s | ~12 total | Parse ALL files first, single batch write |
-| **v4 (large chunks + combined)** | 4.5 ms | 2.72s | ~6 | 50K chunk size, CREATE+CONTAINS in one query |
-| **v5 (code-only files)** | 4.5 ms | 2.86s | ~6 | Skip non-code files (31% fewer files for RamPump) |
-| **v6 (concurrent writes)** | 4.9 ms | 2.78s | ~6 | Thread pool for parallel node type writes |
-| **v7 (skip vars+params)** | 2.2 ms | 3.35s | ~10 | Drop Variable/Parameter nodes (76% of total) |
+| Metric | Value |
+|--------|-------|
+| **Total indexing time** | ~12 min |
+| **Nodes** | 148,793 |
+| **CALLS edges** | ~29K |
+| **IMPORTS edges** | 30,010 |
+| **INHERITS edges** | 1,203 |
+| **CALLS precision** | 95%+ (manual review of 20 random edges) |
+| **CALLS strict precision** | 100% (automated, 4×150 edge samples) |
+| **INHERITS precision** | 100% (50-edge random samples) |
+| **False positive rate** | 0% automated, ~5% on LLM-assisted manual review |
 
-**Overall improvement: 6.37s → 3.35s (47% faster), node count: 205K → 49K (76% reduction), round trips: 456 → ~10 (98% reduction)**
-
----
-
-## Detailed Breakdown
-
-### v0: Baseline (per-file operations)
-
-Each file triggered 4-10 `session.run()` Cypher queries:
-
-1. MERGE File node (1 query)
-2. Directory hierarchy — one MERGE per parent directory level (2-5 queries per file)
-3. MERGE code nodes per label — Function, Class, etc. (1-2 queries)
-4. MERGE CONTAINS edges (1-2 queries)
-5. MERGE Parameters (1 query if applicable)
-6. MERGE Imports (1 query if applicable)
-
-**For 76 files**: ~456 round trips to FalkorDB. Each round trip includes Cypher parsing, query planning, execution, and TCP/socket serialization overhead.
-
-```
-Profile:
-  parse:          1.37s  (18.1 ms/file)
-  db_write:       3.28s  (43.1 ms/file)  ← bottleneck
-  dir_hierarchy:  included in db_write
-  function_calls: 1.15s
-  TOTAL:          6.37s
-```
-
-### v1: Batch Directory Hierarchy
-
-**Change**: Replaced per-file directory creation (O(files × depth) queries) with a single batch operation after all files are processed.
-
-New `_create_directory_hierarchy_batch()` method:
-- Collects all unique directory paths in one pass
-- Creates all Directory nodes in one UNWIND query
-- Creates all CONTAINS edges (Repo→Dir, Dir→Dir, Dir→File) in ~4 UNWIND queries
-
-**Result**: Eliminated ~300 per-file directory queries, replaced with ~5 total queries.
-
-```
-Profile:
-  parse:          1.00s  (13.1 ms/file)
-  db_write:       2.35s  (30.9 ms/file)  ← 28% faster
-  dir_hierarchy:  0.01s  (was included above)
-  function_calls: 0.86s
-  TOTAL:          4.64s
-```
-
-### v2: Cross-File Batch Accumulation
-
-**Change**: Instead of calling `add_file_to_graph()` per file (each doing ~6 queries), accumulate parsed data across files and flush every 100 files via `add_files_to_graph_batch()`.
-
-The batch method accumulates:
-- All File nodes across files
-- All Function nodes across files (with file_path in each row)
-- All Class nodes, Variable nodes, etc.
-- All CONTAINS edges, Parameters, Imports
-
-Then executes ~12 total queries (one per node type + edge type) regardless of file count within the batch.
-
-**Result**: Round trips dropped from ~456 to ~12 per batch.
-
-```
-Profile:
-  parse:          0.91s  (11.9 ms/file)
-  db_write:       1.91s  (25.2 ms/file)  ← 42% faster than v0
-  dir_hierarchy:  0.01s
-  function_calls: 0.91s
-  TOTAL:          4.11s
-```
-
-### v3: Parse-All-Then-Write-All
-
-**Change**: Restructured the indexing pipeline into two clear phases:
-
-1. **Parse phase**: Parse ALL files into memory using tree-sitter (no DB calls)
-2. **Write phase**: Single call to `add_files_to_graph_batch()` for all files at once
-
-This enables better progress reporting (separate "parsing" and "node_creation" phases) and ensures the DB write is one contiguous operation.
-
-```
-Profile:
-  prescan+filter: 0.40s
-  parse:          0.91s  (11.9 ms/file)
-  batch_write:    1.98s  (all 76 files in one shot)
-  dir_hierarchy:  0.02s
-  relationships:  0.97s
-  TOTAL:          4.29s
-```
-
-### v4: Large Chunks + Combined Queries
-
-**Change**: Two optimizations:
-
-1. **Increased UNWIND chunk size from 2,000 to 50,000**: With 84K nodes, chunk size 2000 generated 84 sequential queries. At 50K, this drops to ~2 queries per node type.
-
-2. **Combined CREATE + CONTAINS in single query**: For fresh indexing (CREATE mode), the node creation and File→Node CONTAINS edge are created in one query instead of two, halving round trips.
-
-Before (per label):
-```cypher
--- Query 1: Create nodes
-UNWIND $batch AS row
-CREATE (n:Function {name: row.name, path: row.path, line_number: row.line_number})
-SET n += row
-
--- Query 2: Create edges
-UNWIND $batch AS row
-MATCH (f:File {path: row.file_path})
-MATCH (n:Function {name: row.name, ...})
-CREATE (f)-[:CONTAINS]->(n)
-```
-
-After (combined):
-```cypher
--- Single query: Create node + edge
-UNWIND $batch AS row
-MATCH (f:File {path: row.path})
-CREATE (n:Function {name: row.name, path: row.path, line_number: row.line_number})
-SET n += row
-CREATE (f)-[:CONTAINS]->(n)
-```
-
-**Result**: Batch write went from 1.98s to 0.34s (83% faster).
-
-```
-Profile:
-  prescan+filter: 0.40s
-  parse:          0.91s  (11.9 ms/file)
-  batch_write:    0.34s  (CREATE, chunk=50000)  ← 83% faster than v3
-  dir_hierarchy:  0.01s
-  relationships:  1.06s
-  TOTAL:          2.72s
-```
-
----
-
-## CREATE vs MERGE
-
-For initial indexing of a fresh repository, the pipeline uses `CREATE` instead of `MERGE`:
-
-- **MERGE**: "Find this node; if it doesn't exist, create it." Requires an index lookup per node.
-- **CREATE**: "Create this node." No existence check, direct insert.
-
-Since the indexing handler already checks if a repository is indexed before starting, `CREATE` is safe for the initial load and avoids N existence checks.
-
----
-
-## Non-Blocking HTTP Server
-
-**Problem**: The indexing coroutine was scheduled on the main asyncio event loop via `asyncio.run_coroutine_threadsafe()`. Since `build_graph_from_path_async` does heavy synchronous work (file parsing, DB writes), it blocked uvicorn from serving HTTP requests during indexing.
-
-**Fix**: Replaced with `threading.Thread` + `build_graph_from_path_sync()` that creates its own event loop. The HTTP server remains fully responsive during indexing — health checks, job status queries, and other tool calls work with ~400ms latency.
-
----
-
-## Progress Tracking
-
-`check_job_status` now returns detailed progress during indexing:
-
-```json
-{
-  "status": "running",
-  "phase": "node_creation",
-  "processed_files": 5000,
-  "total_files": 9382,
-  "nodes_created": 42000,
-  "edges_created": 0,
-  "progress_percentage": 53.3,
-  "avg_ms_per_file": 15.6,
-  "estimated_time_remaining_human": "1m 8s",
-  "elapsed_time_human": "1m 22s"
-}
-```
-
-Phases: `parsing` → `node_creation` → `relationship_linking` → `completed`
-
----
-
-## RamPump Real-World Results (5,542 code files)
-
-### Final Results — Standalone FalkorDB (bundled binary)
+### Indexing Phases
 
 | Phase | Time | Details |
 |-------|------|---------|
-| Parsing | ~2 min | 5,542 code files (vendor/minified/bower excluded) |
-| Node creation | ~3.5 min | ~150K nodes via batched CREATE + thread pool |
-| Relationship linking | ~3.5 min | ~28K CALLS + ~1.5K INHERITS edges |
-| **Total** | **9m 15s (555s)** | **Full graph with all node types** |
+| Parsing | ~2 min | 5,542 code files via tree-sitter (vendor/minified excluded) |
+| Node creation | ~5 min | 148K nodes via batched CREATE + thread pool |
+| Relationship linking | ~5 min | CALLS + INHERITS + IMPORTS edges |
 
-### Backend
+---
 
-**Standalone FalkorDB** (bundled `redis-server` + `falkordb.so`, ARM64 macOS) — managed directly by the Mac app as a subprocess. No external dependencies required.
+## CALLS Resolver Design
 
-### CALLS Resolver Fix
+The CALLS resolver is precision-first: it only creates edges it's confident about. The graph is designed to supplement Claude Code — Claude can grep to fill recall gaps, but false positives send Claude down wrong paths and waste tokens.
 
-The call resolver was generating **600K+ spurious edges** by matching common function names globally. Three fixes reduced this to **~28K edges**:
+### Resolution Rules
 
-1. **Skip minified JS names** (<=2 chars: `a`, `i`, `t`, etc.) — these are bundled code artifacts
-2. **Require imports for cross-file resolution** — don't match just because a name exists somewhere
-3. **Skip vendor/minified/bundled files** entirely (`*.min.js`, `vendor/`, `bower/`)
+| Rule | Pattern | Resolution | Example |
+|------|---------|------------|---------|
+| 1 | `self.method()` | Same file | `self.authenticate()` → current file |
+| 2 | `func()` where func is defined locally | Same file | `_helper()` → current file |
+| 3 | `func()` where func is imported | Resolve via import path | `authenticate()` with `from X import authenticate` |
+| 4 | `module.func()` where module is imported | Resolve func within module | `user_service.authenticate()` → `services/user/actions.py` |
+| — | `obj.method()` where obj is NOT imported | **Skip** | `settings.get()`, `response.json()` |
+| — | `a.b.c()` (chained, >1 dot) | **Skip** | `Model.query.options()`, `os.path.join()` |
+| — | Builtins, <=2 char names | **Skip** | `len()`, `int()`, `a()` |
 
-This was the single biggest performance win — relationship linking went from 1-3+ hours to ~3.5 minutes.
+### Why Skip obj.method()?
 
-### File Filtering
+Without type inference, we can't know what type `obj` is. `settings.get()` could be `dict.get` or a function named `get` in another file. `response.json()` could be `requests.Response.json` or a local function. Any resolution is a guess, and guesses create false positives that waste Claude's tokens.
 
-| Filter | Files removed | Impact |
-|--------|--------------|--------|
-| IGNORE_DIRS (node_modules, etc.) | 94,747 | Standard gitignore-style |
-| Vendor/bower/minified patterns | 2,202 | Bundled third-party code |
-| Non-code files | Kept as minimal File nodes | Complete directory hierarchy |
-| **Final code files** | **5,542** | Parsed by tree-sitter |
+Claude can grep for `\.method_name\(` in seconds — the graph doesn't need to duplicate that.
+
+### Why Skip Chained Calls?
+
+`MarketplaceAccess.query.options()` — `MarketplaceAccess` is imported, but `.query` returns a SQLAlchemy Query object, and `.options()` is a method on that object. The resolver only sees the first part (`MarketplaceAccess`) and the last part (`options`), missing the intermediate type transition. Single-dot calls (`module.func()`) are safe because modules expose functions directly.
+
+### Co-Import Fix
+
+`from X import (A, B, C)` was only capturing `A` — tree-sitter's `child_by_field_name('name')` returns the first match. Fixed to iterate all children of the import statement. This increased IMPORTS edges by 25% (23,942 → 30,010) and was the root cause of many missed CALLS edges.
+
+### Import Path Resolution
+
+`local_imports` now stores `full_import_name` (e.g. `nativo_mcp.tools.call_controller`) instead of bare `name` (`call_controller`). The resolver strips the function name to get the module path (`nativo_mcp/tools`) and matches against file paths (`nativo_mcp/tools/__init__.py`). This fixed cross-package call resolution.
+
+---
+
+## Accuracy Validation
+
+### Level 1: Automated Eval Suite (36 tests)
+
+| Category | Tests | Key Results |
+|----------|-------|-------------|
+| Data completeness | 7 | Python files: graph 2,538 vs disk 2,534 (100%) |
+| Find callers | 2 | authenticate: 6/6 callers found, 100% precision |
+| Find code | 4 | Cross-language search 1,518x faster than grep |
+| Relationships | 6 | 8/8 known CALLS, 4/4 INHERITS, 0% FP rate |
+| Edge cases | 7 | __init__ re-exports, decorators, Vue SFC all pass |
+| Graph queries | 6 | Dead code, impact analysis, module coupling |
+
+### Level 2: Source-Level Verification
+
+Random sampling with `rand() ORDER BY` — each run is independent.
+
+| Test | Method | Samples | Precision |
+|------|--------|---------|-----------|
+| CALLS (automated) | Regex: `name(` near reported line | 4×100 | 100% |
+| CALLS (strict) | Excludes comments, strings, imports, defs | 4×100 | 100% |
+| CALLS (LLM review) | Manual inspection of source context | 20 | 95% |
+| INHERITS (automated) | `class Child(Parent)` at reported line | 4×50 | 100% |
+
+The 5% gap between automated and LLM review is from chained calls (`Model.query.options()`) which the automated checker can't distinguish from valid `module.func()` calls. The chained-call fix eliminates this category.
+
+### Graph vs Grep Comparison
+
+| Query | Graph | Grep | Graph Advantage |
+|-------|-------|------|-----------------|
+| Python file count | 24ms, 175 chars | 1,776ms, 172K chars | 74x faster, 988x fewer tokens |
+| Find callers of authenticate | 8ms, structured | 5ms, raw text | Precise targets vs text mentions |
+| Class hierarchy (multi-hop) | 4ms, full chain | 3× sequential greps | Single query vs iterative |
+| Dead code detection | 25ms | ~263 seconds | Infeasible with grep |
+| Cross-language search | 9ms | 13,663ms | 1,518x faster |
+
+**Key insight**: The graph's value isn't replacing grep — it's making Claude's first pass accurate. Instead of grep → read → grep → read (3-4 iterations), one graph query returns precise answers with file paths and line numbers. The token savings compound across iterations.
+
+---
+
+## Indexing Pipeline Optimizations
+
+### Summary (76-file benchmark)
+
+| Version | DB Write/File | Total | Round Trips | Key Change |
+|---------|--------------|-------|-------------|------------|
+| v0 (baseline) | 43.1 ms | 6.37s | ~456 | Per-file MERGE |
+| v1 (dir batch) | 30.9 ms | 4.64s | ~380 | Batch directory hierarchy |
+| v2 (cross-file batch) | 25.2 ms | 4.11s | ~12 | Accumulate across files |
+| v3 (parse-then-write) | 26.1 ms | 4.29s | ~12 | Clear phase separation |
+| v4 (chunks + combined) | 4.5 ms | 2.72s | ~6 | 50K chunks, CREATE+CONTAINS |
+
+**Overall: 6.37s → 2.72s (57% faster), round trips: 456 → 6 (99% reduction)**
+
+### Key Optimizations
+
+- **Batch directory hierarchy**: Per-file O(depth) → 5 total queries
+- **Cross-file batch writes**: Per-file 6 queries → ~10 total per type
+- **CREATE instead of MERGE**: Skip existence check for fresh repos
+- **5K UNWIND chunks + combined queries**: 84 queries → ~10
+- **Thread pool**: Parallel node type writes
+- **Skip vendor/minified**: 7,744 → 5,542 files
 
 ---
 
@@ -239,8 +135,8 @@ This was the single biggest performance win — relationship linking went from 1
 
 [Write Phase]
   file_data[] → add_files_to_graph_batch()
-    → UNWIND File nodes      (1 query, all files)
-    → UNWIND Function nodes  (1 query, all functions across all files)
+    → UNWIND File nodes      (1 query)
+    → UNWIND Function nodes  (1 query, all files)
     → UNWIND Class nodes     (1 query)
     → UNWIND Parameters      (1 query)
     → UNWIND Imports          (1 query)
@@ -249,21 +145,14 @@ This was the single biggest performance win — relationship linking went from 1
 
 [Relationship Phase]
   → _create_all_inheritance_links()  (batched at 1000)
-  → _create_all_function_calls()    (batched at 1000, label-specific)
+  → _create_all_function_calls()    (precision-first resolver, label-specific)
 ```
 
----
+## Database
 
-## Database Backend
+**Standalone FalkorDB** — bundled `redis-server` + `falkordb.so` (ARM64 macOS), managed directly by the Mac app as a subprocess.
 
-**Standalone FalkorDB** — the Mac app bundles `redis-server` + `falkordb.so` (ARM64 macOS) and manages the process directly via Swift. No external dependencies.
-
-- `redis-server` (2.7MB) + `falkordb.so` (30MB) downloaded via `scripts/bundle-falkordb.sh`
-- ARM64 macOS `falkordb.so` from [FalkorDB releases](https://github.com/FalkorDB/FalkorDB/releases)
-- Data persists at `~/Library/Application Support/CodeGraphContext/falkordb/`
-- MCP server connects via `falkordb-remote` (TCP localhost:6379)
-- MCP server starts independently — auto-reconnects to FalkorDB when available
-
-### Why Not FalkorDB Lite (redislite)?
-
-The `falkordblite` pip package wraps `redis-server` via the `redislite` Python library. While the underlying `redis-server` binary is stable, the Python wrapper has a bug: it loses its connection to the child redis-server process during heavy writes, causing "broken pipe" / "no such file or directory" errors. The standalone approach uses the same binaries but manages them directly from Swift, avoiding the wrapper entirely.
+- `redis-server` (2.7MB) + `falkordb.so` (30MB) via `scripts/bundle-falkordb.sh`
+- Data: `~/Library/Application Support/CodeGraphContext/falkordb/`
+- MCP server connects via TCP localhost:6379
+- MCP server starts independently — auto-reconnects when FalkorDB becomes available
