@@ -29,13 +29,6 @@ struct MenuBarView: View {
             Divider()
         }
 
-        Button("Open Visualization") {
-            if appState.pythonManager.isVizServerRunning {
-                NSWorkspace.shared.open(URL(string: "http://localhost:\(appState.pythonManager.vizPort)/explore")!)
-            }
-        }
-        .disabled(!appState.pythonManager.isVizServerRunning)
-
         Button("Index Repository...") {
             // Activate app so NSOpenPanel appears in front
             NSApp.setActivationPolicy(.regular)
@@ -121,6 +114,16 @@ struct MenuBarView: View {
 
             Divider()
 
+            Button("Open Visualization") {
+                let vizPort = appState.pythonManager.vizPort
+                let encoded = repo.path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? repo.path
+                let urlStr = "http://localhost:\(vizPort)/explore?backend=http%3A%2F%2Flocalhost%3A\(vizPort)&repo_path=\(encoded)"
+                if let url = URL(string: urlStr) {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .disabled(!appState.pythonManager.isVizServerRunning)
+
             Button("Reindex") {
                 Task { @MainActor in
                     await appState.indexingManager.indexRepository(at: repo.path)
@@ -141,6 +144,27 @@ struct MenuBarView: View {
                     }
                 }
             }
+
+            Button("Remove from Index") {
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Remove \(repo.name)?"
+                    alert.informativeText = "This will delete all indexed data for \(repo.name) from the graph. The source files are not affected."
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "Remove")
+                    alert.addButton(withTitle: "Cancel")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        Task { @MainActor in
+                            await appState.indexingManager.removeRepository(at: repo.path)
+                        }
+                    }
+                    NSApp.setActivationPolicy(.accessory)
+                }
+            }
+
+            Divider()
 
             Button("Open in Finder") {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: repo.path)

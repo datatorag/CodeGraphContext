@@ -88,13 +88,24 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
 
         # Try direct FalkorDB connection first (avoids wrapper caching issues)
         direct_graph = _get_falkordb_graph()
-        use_direct = direct_graph is not None and not cypher_query and not repo_path
+        use_direct = direct_graph is not None and not cypher_query
 
         if use_direct:
             print("DEBUG: Using direct FalkorDB connection", file=sys.stderr, flush=True)
             # Structural query: skip Variable/Parameter for a cleaner visualization
-            query = "MATCH (n)-[rel]->(m) WHERE NOT (n:Variable OR n:Parameter) AND NOT (m:Variable OR m:Parameter) RETURN n, rel, m LIMIT 50000"
-            raw_result = direct_graph.query(query)
+            if repo_path:
+                resolved = str(Path(repo_path).resolve())
+                print(f"DEBUG: Filtering by repo_path={resolved}", file=sys.stderr, flush=True)
+                query = (
+                    "MATCH (n)-[rel]->(m) "
+                    "WHERE NOT (n:Variable OR n:Parameter) AND NOT (m:Variable OR m:Parameter) "
+                    "AND (n.path STARTS WITH $prefix OR m.path STARTS WITH $prefix) "
+                    "RETURN n, rel, m LIMIT 50000"
+                )
+                raw_result = direct_graph.query(query, params={"prefix": resolved})
+            else:
+                query = "MATCH (n)-[rel]->(m) WHERE NOT (n:Variable OR n:Parameter) AND NOT (m:Variable OR m:Parameter) RETURN n, rel, m LIMIT 50000"
+                raw_result = direct_graph.query(query)
             print(f"DEBUG: Direct query returned {len(raw_result.result_set)} records", file=sys.stderr, flush=True)
 
             for row in raw_result.result_set:

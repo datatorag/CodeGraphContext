@@ -103,6 +103,31 @@ final class IndexingManager: ObservableObject {
         }
     }
 
+    // MARK: - Remove Repository
+
+    func removeRepository(at path: String) async {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+
+        // Stop watching first if active
+        if watchedPaths.contains(path) {
+            await unwatchRepository(at: path)
+        }
+
+        // Delete from graph
+        do {
+            _ = try await callTool("delete_repository", arguments: ["repo_path": path])
+            addActivity("Removed \(name) from index")
+            logger.info("Deleted repository \(path) from graph")
+        } catch {
+            logger.error("Failed to delete repository \(path): \(error)")
+            addActivity("Failed to remove \(name)")
+            return
+        }
+
+        // Refresh lists and stats
+        await refreshAll()
+    }
+
     func unwatchAll() async {
         for path in watchedPaths {
             do {
