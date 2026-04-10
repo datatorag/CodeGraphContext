@@ -45,24 +45,23 @@ final class AppState: ObservableObject {
     // MARK: - Periodic Data Refresh
 
     private func startPeriodicRefresh() {
-        // Refresh graph stats and repo list every 30 seconds
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        // Refresh every 10 seconds — calls are cheap HTTP GETs and fail silently
+        // when MCP isn't ready yet
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                if self.pythonManager.isMCPServerRunning {
-                    await self.indexingManager.refreshAll()
-                    // Poll job progress if indexing
-                    if self.indexingManager.isIndexing {
-                        await self.indexingManager.pollJobProgress()
-                    }
+                await self.indexingManager.refreshAll()
+                if self.indexingManager.isIndexing {
+                    await self.indexingManager.pollJobProgress()
                 }
             }
         }
-        // Also do an initial fetch after services have had time to start
+        // Initial fetch — retry a few times in case MCP is still starting
         Task {
-            try? await Task.sleep(for: .seconds(10))
-            if pythonManager.isMCPServerRunning {
+            for delay in [5, 10, 20] {
+                try? await Task.sleep(for: .seconds(delay))
                 await indexingManager.refreshAll()
+                if !indexingManager.indexedRepositories.isEmpty { break }
             }
         }
     }

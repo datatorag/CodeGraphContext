@@ -126,9 +126,12 @@ final class IndexingManager: ObservableObject {
             let result = try await callTool("list_indexed_repositories", arguments: [:])
             if let repos = parseRepoList(from: result) {
                 indexedRepositories = repos
+                logger.info("Loaded \(repos.count) repositories")
+            } else {
+                logger.warning("parseRepoList returned nil — response text: \(self.extractText(from: result) ?? "(nil)")")
             }
         } catch {
-            logger.error("Failed to list repos: \(error)")
+            // Expected when MCP is still starting — don't spam logs
         }
     }
 
@@ -147,7 +150,7 @@ final class IndexingManager: ObservableObject {
                 )
             }
         } catch {
-            // Stats not critical — silently ignore
+            // Expected when MCP is still starting
         }
     }
 

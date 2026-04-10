@@ -10,7 +10,7 @@ struct CodeGraphContextApp: App {
             MenuBarView(appState: appState)
         } label: {
             HStack(spacing: 2) {
-                Image(systemName: "circle.grid.3x3.fill")
+                Image(systemName: "arrow.triangle.branch")
                 Image(systemName: "circle.fill")
                     .font(.system(size: 6))
                     .foregroundColor(menuBarDotColor)
