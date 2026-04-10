@@ -29,7 +29,6 @@ struct MenuBarView: View {
             Divider()
         }
 
-        // Bottom actions
         Button("Open Visualization") {
             openWindow(id: "visualization")
             NSApp.setActivationPolicy(.regular)
@@ -61,25 +60,18 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var servicesSection: some View {
-        serviceRow("FalkorDB", port: appState.pythonManager.falkorDBPort,
-                   isRunning: appState.pythonManager.isFalkorDBRunning)
-        serviceRow("MCP Server", port: appState.pythonManager.mcpPort,
-                   isRunning: appState.pythonManager.isMCPServerRunning)
-        serviceRow("Visualization", port: appState.pythonManager.vizPort,
-                   isRunning: appState.pythonManager.isVizServerRunning)
+        serviceItem("FalkorDB", port: appState.pythonManager.falkorDBPort,
+                    isRunning: appState.pythonManager.isFalkorDBRunning)
+        serviceItem("MCP Server", port: appState.pythonManager.mcpPort,
+                    isRunning: appState.pythonManager.isMCPServerRunning)
+        serviceItem("Visualization", port: appState.pythonManager.vizPort,
+                    isRunning: appState.pythonManager.isVizServerRunning)
     }
 
-    private func serviceRow(_ name: String, port: Int, isRunning: Bool) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "circle.fill")
-                .foregroundColor(isRunning ? .green : .red)
-                .font(.system(size: 8))
-            Text("\(name)")
-            Spacer()
-            Text(":\(port)")
-                .foregroundColor(.secondary)
-                .font(.system(.body, design: .monospaced))
-        }
+    private func serviceItem(_ name: String, port: Int, isRunning: Bool) -> some View {
+        let dot = isRunning ? "\u{1F7E2}" : "\u{1F534}"  // green/red circle emoji
+        let status = isRunning ? "Running on :\(port)" : "Stopped"
+        return Text("\(dot) \(name) \u{2014} \(status)")
     }
 
     // MARK: - Repositories
@@ -98,8 +90,9 @@ struct MenuBarView: View {
 
     private func repoMenu(_ repo: IndexedRepository) -> some View {
         let isWatched = appState.indexingManager.watchedPaths.contains(repo.path)
+        let watchBadge = isWatched ? " \u{1F441}" : ""  // eye emoji
 
-        return Menu {
+        return Menu("\u{1F4C1} \(repo.name)\(watchBadge)") {
             Text(repo.path)
                 .foregroundColor(.secondary)
 
@@ -123,18 +116,6 @@ struct MenuBarView: View {
             Button("Open in Finder") {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: repo.path)
             }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "folder.fill")
-                    .foregroundColor(.accentColor)
-                Text(repo.name)
-                Spacer()
-                if isWatched {
-                    Image(systemName: "eye")
-                        .foregroundColor(.green)
-                        .font(.system(size: 10))
-                }
-            }
         }
     }
 
@@ -143,42 +124,21 @@ struct MenuBarView: View {
     @ViewBuilder
     private var indexingProgressSection: some View {
         if let name = appState.indexingManager.indexingRepoName {
-            HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.small)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Indexing \(name)")
-                        .font(.system(.body, weight: .medium))
-                    if let phase = appState.indexingManager.indexingPhase {
-                        HStack(spacing: 4) {
-                            Text(phase.replacingOccurrences(of: "_", with: " "))
-                                .foregroundColor(.secondary)
-                            if let elapsed = appState.indexingManager.indexingElapsed {
-                                Text("(\(elapsed))")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .font(.system(.caption))
-                    }
-                }
-            }
+            let phase = appState.indexingManager.indexingPhase?
+                .replacingOccurrences(of: "_", with: " ") ?? "starting"
+            let elapsed = appState.indexingManager.indexingElapsed.map { " (\($0))" } ?? ""
+            Text("\u{23F3} Indexing \(name) \u{2014} \(phase)\(elapsed)")
         }
     }
 
     // MARK: - Graph Stats
 
     private func graphStatsSection(_ stats: GraphStats) -> some View {
-        Menu {
+        Menu("\u{1F4CA} Graph: \(formatted(stats.totalNodes)) nodes") {
             Text("\(formatted(stats.files)) files")
             Text("\(formatted(stats.functions)) functions")
             Text("\(formatted(stats.classes)) classes")
             Text("\(formatted(stats.modules)) modules")
-        } label: {
-            HStack {
-                Image(systemName: "chart.bar.fill")
-                Text("Graph: \(formatted(stats.totalNodes)) nodes")
-                    .foregroundColor(.secondary)
-            }
         }
     }
 
@@ -186,15 +146,9 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var activitySection: some View {
-        Menu {
+        Menu("\u{1F552} Recent Activity") {
             ForEach(appState.indexingManager.activityLog.prefix(5)) { entry in
-                Text("\(entry.message) \(entry.relativeTime)")
-            }
-        } label: {
-            HStack {
-                Image(systemName: "clock")
-                Text("Recent Activity")
-                    .foregroundColor(.secondary)
+                Text("\(entry.message) \u{2014} \(entry.relativeTime)")
             }
         }
     }
