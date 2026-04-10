@@ -1,0 +1,112 @@
+[
+  {
+    "question": "Where is authenticate defined?",
+    "category": "simple",
+    "tokens_baseline": 193,
+    "tokens_cgc": 11140,
+    "time_baseline_ms": 3224.8344169929624,
+    "time_cgc_ms": 237.42637503892183,
+    "correct_baseline": true,
+    "correct_cgc": true,
+    "notes": "Grep: 2 lines. CGC: 1 functions. Both find it. Grep is simpler for exact 'def' matches."
+  },
+  {
+    "question": "What does build_items_response do?",
+    "category": "simple",
+    "tokens_baseline": 20874,
+    "tokens_cgc": 48728,
+    "time_baseline_ms": 1099.9749167822301,
+    "time_cgc_ms": 187.0384169742465,
+    "correct_baseline": true,
+    "correct_cgc": true,
+    "notes": "Grep finds 105 defs. To understand, need file read (7344 chars). CGC returns source directly. Roughly equivalent."
+  },
+  {
+    "question": "Find all Flask route handlers",
+    "category": "simple",
+    "tokens_baseline": 0,
+    "tokens_cgc": 262,
+    "time_baseline_ms": 10.279625188559294,
+    "time_cgc_ms": 9.539542254060507,
+    "correct_baseline": false,
+    "correct_cgc": false,
+    "notes": "Grep: 0 lines. CGC: 5 decorated functions. Both work. Grep catches more patterns; CGC is structured."
+  },
+  {
+    "question": "All callers of authenticate",
+    "category": "structural",
+    "tokens_baseline": 0,
+    "tokens_cgc": 2705,
+    "time_baseline_ms": 8.732333313673735,
+    "time_cgc_ms": 11.944707948714495,
+    "correct_baseline": false,
+    "correct_cgc": true,
+    "notes": "Grep: 0 raw, 0 after filtering (noisy \u2014 includes dict.authenticate, test mocks, etc.). CGC: 5 verified callers. CGC provides precise caller\u2192callee edges; grep requires manual filtering."
+  },
+  {
+    "question": "Login flow dependencies (callees)",
+    "category": "structural",
+    "tokens_baseline": 193,
+    "tokens_cgc": 849,
+    "time_baseline_ms": 1194.4626667536795,
+    "time_cgc_ms": 11.267791036516428,
+    "correct_baseline": false,
+    "correct_cgc": true,
+    "notes": "Grep: finds the def but can't trace call chain. CGC: 5 direct callees. This requires static analysis, not text search."
+  },
+  {
+    "question": "Circular dependencies",
+    "category": "structural",
+    "tokens_baseline": 0,
+    "tokens_cgc": 188,
+    "time_baseline_ms": 0,
+    "time_cgc_ms": 8.862874936312437,
+    "correct_baseline": false,
+    "correct_cgc": true,
+    "notes": "Grep: impossible. CGC: 0 circular import pairs found. Detecting cycles requires graph traversal."
+  },
+  {
+    "question": "Most coupled modules",
+    "category": "structural",
+    "tokens_baseline": 0,
+    "tokens_cgc": 989,
+    "time_baseline_ms": 0,
+    "time_cgc_ms": 62.1484168805182,
+    "correct_baseline": false,
+    "correct_cgc": true,
+    "notes": "Grep: infeasible (would need to parse all imports, count cross-module calls). CGC: 10 module pairs. Graph aggregation across entire codebase."
+  },
+  {
+    "question": "Find dead code",
+    "category": "graph-only",
+    "tokens_baseline": 0,
+    "tokens_cgc": 9019,
+    "time_baseline_ms": 0,
+    "time_cgc_ms": 385.3944996371865,
+    "correct_baseline": false,
+    "correct_cgc": true,
+    "notes": "Grep: would need to check each of ~27K functions \u2014 hours of grep + manual filtering. CGC: 49 dead functions in 385ms."
+  },
+  {
+    "question": "Impact of changing BaseSchema",
+    "category": "graph-only",
+    "tokens_baseline": 0,
+    "tokens_cgc": 334,
+    "time_baseline_ms": 1276.9042919389904,
+    "time_cgc_ms": 7.436792366206646,
+    "correct_baseline": false,
+    "correct_cgc": true,
+    "notes": "Grep: 0 direct subclasses (text match). CGC: 4 entries in hierarchy (includes indirect). Grep misses indirect inheritance and non-standard patterns."
+  },
+  {
+    "question": "API route \u2192 database call chain",
+    "category": "graph-only",
+    "tokens_baseline": 0,
+    "tokens_cgc": 372,
+    "time_baseline_ms": 0,
+    "time_cgc_ms": 18.616582732647657,
+    "correct_baseline": false,
+    "correct_cgc": true,
+    "notes": "Grep: impossible without reading every file in the chain. CGC: 5 transitive callees traced automatically. Multi-hop call chain traversal requires graph."
+  }
+]
