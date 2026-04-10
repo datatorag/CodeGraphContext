@@ -1,112 +1,314 @@
-[
-  {
-    "question": "Where is authenticate defined?",
-    "category": "simple",
-    "tokens_baseline": 193,
-    "tokens_cgc": 11140,
-    "time_baseline_ms": 3224.8344169929624,
-    "time_cgc_ms": 237.42637503892183,
-    "correct_baseline": true,
-    "correct_cgc": true,
-    "notes": "Grep: 2 lines. CGC: 1 functions. Both find it. Grep is simpler for exact 'def' matches."
-  },
-  {
-    "question": "What does build_items_response do?",
-    "category": "simple",
-    "tokens_baseline": 20874,
-    "tokens_cgc": 48728,
-    "time_baseline_ms": 1099.9749167822301,
-    "time_cgc_ms": 187.0384169742465,
-    "correct_baseline": true,
-    "correct_cgc": true,
-    "notes": "Grep finds 105 defs. To understand, need file read (7344 chars). CGC returns source directly. Roughly equivalent."
-  },
-  {
-    "question": "Find all Flask route handlers",
-    "category": "simple",
-    "tokens_baseline": 0,
-    "tokens_cgc": 262,
-    "time_baseline_ms": 10.279625188559294,
-    "time_cgc_ms": 9.539542254060507,
-    "correct_baseline": false,
-    "correct_cgc": false,
-    "notes": "Grep: 0 lines. CGC: 5 decorated functions. Both work. Grep catches more patterns; CGC is structured."
-  },
-  {
-    "question": "All callers of authenticate",
-    "category": "structural",
-    "tokens_baseline": 0,
-    "tokens_cgc": 2705,
-    "time_baseline_ms": 8.732333313673735,
-    "time_cgc_ms": 11.944707948714495,
-    "correct_baseline": false,
-    "correct_cgc": true,
-    "notes": "Grep: 0 raw, 0 after filtering (noisy \u2014 includes dict.authenticate, test mocks, etc.). CGC: 5 verified callers. CGC provides precise caller\u2192callee edges; grep requires manual filtering."
-  },
-  {
-    "question": "Login flow dependencies (callees)",
-    "category": "structural",
-    "tokens_baseline": 193,
-    "tokens_cgc": 849,
-    "time_baseline_ms": 1194.4626667536795,
-    "time_cgc_ms": 11.267791036516428,
-    "correct_baseline": false,
-    "correct_cgc": true,
-    "notes": "Grep: finds the def but can't trace call chain. CGC: 5 direct callees. This requires static analysis, not text search."
-  },
-  {
-    "question": "Circular dependencies",
-    "category": "structural",
-    "tokens_baseline": 0,
-    "tokens_cgc": 188,
-    "time_baseline_ms": 0,
-    "time_cgc_ms": 8.862874936312437,
-    "correct_baseline": false,
-    "correct_cgc": true,
-    "notes": "Grep: impossible. CGC: 0 circular import pairs found. Detecting cycles requires graph traversal."
-  },
-  {
-    "question": "Most coupled modules",
-    "category": "structural",
-    "tokens_baseline": 0,
-    "tokens_cgc": 989,
-    "time_baseline_ms": 0,
-    "time_cgc_ms": 62.1484168805182,
-    "correct_baseline": false,
-    "correct_cgc": true,
-    "notes": "Grep: infeasible (would need to parse all imports, count cross-module calls). CGC: 10 module pairs. Graph aggregation across entire codebase."
-  },
-  {
-    "question": "Find dead code",
-    "category": "graph-only",
-    "tokens_baseline": 0,
-    "tokens_cgc": 9019,
-    "time_baseline_ms": 0,
-    "time_cgc_ms": 385.3944996371865,
-    "correct_baseline": false,
-    "correct_cgc": true,
-    "notes": "Grep: would need to check each of ~27K functions \u2014 hours of grep + manual filtering. CGC: 49 dead functions in 385ms."
-  },
-  {
-    "question": "Impact of changing BaseSchema",
-    "category": "graph-only",
-    "tokens_baseline": 0,
-    "tokens_cgc": 334,
-    "time_baseline_ms": 1276.9042919389904,
-    "time_cgc_ms": 7.436792366206646,
-    "correct_baseline": false,
-    "correct_cgc": true,
-    "notes": "Grep: 0 direct subclasses (text match). CGC: 4 entries in hierarchy (includes indirect). Grep misses indirect inheritance and non-standard patterns."
-  },
-  {
-    "question": "API route \u2192 database call chain",
-    "category": "graph-only",
-    "tokens_baseline": 0,
-    "tokens_cgc": 372,
-    "time_baseline_ms": 0,
-    "time_cgc_ms": 18.616582732647657,
-    "correct_baseline": false,
-    "correct_cgc": true,
-    "notes": "Grep: impossible without reading every file in the chain. CGC: 5 transitive callees traced automatically. Multi-hop call chain traversal requires graph."
+{
+  "results": [
+    {
+      "question": "Where is authenticate() defined?",
+      "category": "simple",
+      "tokens_baseline": 193,
+      "tokens_cgc": 11140,
+      "time_baseline_ms": 1167.5322083756328,
+      "time_cgc_ms": 209.10483412444592,
+      "correct_baseline": 3,
+      "correct_cgc": 3,
+      "notes": "Grep: 2 matches. CGC: 1 functions. Both find it directly."
+    },
+    {
+      "question": "What does build_items_response() do?",
+      "category": "simple",
+      "tokens_baseline": 20874,
+      "tokens_cgc": 48728,
+      "time_baseline_ms": 1023.0824998579919,
+      "time_cgc_ms": 181.9932502694428,
+      "correct_baseline": 2,
+      "correct_cgc": 3,
+      "notes": "Grep finds def (105 lines) but needs file read (+7344 chars) to understand."
+    },
+    {
+      "question": "Find all files that import 'flask'",
+      "category": "simple",
+      "tokens_baseline": 27728,
+      "tokens_cgc": 9018,
+      "time_baseline_ms": 1124.5050420984626,
+      "time_cgc_ms": 7.446791976690292,
+      "correct_baseline": 3,
+      "correct_cgc": 3,
+      "notes": "Grep: 281 lines. CGC: 4 importers. Grep wins on text search."
+    },
+    {
+      "question": "What classes inherit from BaseSchema?",
+      "category": "simple",
+      "tokens_baseline": 1126,
+      "tokens_cgc": 334,
+      "time_baseline_ms": 1022.5589163601398,
+      "time_cgc_ms": 6.9066667929291725,
+      "correct_baseline": 2,
+      "correct_cgc": 3,
+      "notes": "Grep: 8 direct subclasses (text match only). CGC: 4 in hierarchy (includes indirect)."
+    },
+    {
+      "question": "Find all functions starting with 'test_'",
+      "category": "simple",
+      "tokens_baseline": 678415,
+      "tokens_cgc": 151,
+      "time_baseline_ms": 995.0894168578088,
+      "time_cgc_ms": 10.682458057999611,
+      "correct_baseline": 3,
+      "correct_cgc": 3,
+      "notes": "Grep: 4930 matches. CGC: 5156 functions. Both work. Grep gives context; CGC gives count."
+    },
+    {
+      "question": "What are the parameters of authenticate()?",
+      "category": "simple",
+      "tokens_baseline": 193,
+      "tokens_cgc": 359,
+      "time_baseline_ms": 1086.1493339762092,
+      "time_cgc_ms": 10.352165903896093,
+      "correct_baseline": 2,
+      "correct_cgc": 3,
+      "notes": "Grep: shows def line. CGC: 2 structured params (['email', 'password'])."
+    },
+    {
+      "question": "Find all TODO/FIXME comments",
+      "category": "simple",
+      "tokens_baseline": 2785513,
+      "tokens_cgc": 0,
+      "time_baseline_ms": 23629.15458297357,
+      "time_cgc_ms": 0,
+      "correct_baseline": 3,
+      "correct_cgc": 0,
+      "notes": "Grep: 3788 TODOs/FIXMEs. CGC: 0 \u2014 comments aren't indexed. GREP WINS."
+    },
+    {
+      "question": "What decorators are on the 'post' method in LoginPageController?",
+      "category": "simple",
+      "tokens_baseline": 4562,
+      "tokens_cgc": 65029,
+      "time_baseline_ms": 1152.7925827540457,
+      "time_cgc_ms": 195.440832991153,
+      "correct_baseline": 2,
+      "correct_cgc": 3,
+      "notes": "Grep: finds class, needs file read (+4319 chars). CGC returns source directly."
+    },
+    {
+      "question": "Who calls authenticate() and from where?",
+      "category": "structural",
+      "tokens_baseline": 1120,
+      "tokens_cgc": 2705,
+      "time_baseline_ms": 1020.6693750806153,
+      "time_cgc_ms": 11.490708217024803,
+      "correct_baseline": 1,
+      "correct_cgc": 3,
+      "notes": "Grep: 8 raw, 7 filtered (still noisy). CGC: 5 verified callers with file+line."
+    },
+    {
+      "question": "Full call chain from authenticate to database",
+      "category": "structural",
+      "tokens_baseline": 193,
+      "tokens_cgc": 372,
+      "time_baseline_ms": 1000.2643330954015,
+      "time_cgc_ms": 10.987292043864727,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: can't trace call chains. CGC: 5 transitive callees."
+    },
+    {
+      "question": "If I change UserSchema, what tests would break?",
+      "category": "structural",
+      "tokens_baseline": 3612,
+      "tokens_cgc": 242,
+      "time_baseline_ms": 970.9189157001674,
+      "time_cgc_ms": 10.372083634138107,
+      "correct_baseline": 1,
+      "correct_cgc": 3,
+      "notes": "Grep: 15 test file mentions (text only). CGC: 5 callers, 0 in test files (structural)."
+    },
+    {
+      "question": "Which modules have the highest fan-out?",
+      "category": "structural",
+      "tokens_baseline": 0,
+      "tokens_cgc": 787,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 33.189957961440086,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: infeasible. CGC: top 10 modules by fan-out."
+    },
+    {
+      "question": "Dependency graph of the services/ directory",
+      "category": "structural",
+      "tokens_baseline": 171436,
+      "tokens_cgc": 1234,
+      "time_baseline_ms": 930.0366248935461,
+      "time_cgc_ms": 17.18387519940734,
+      "correct_baseline": 1,
+      "correct_cgc": 3,
+      "notes": "Grep: 599 service files (no edges). CGC: 15 service\u2192service deps."
+    },
+    {
+      "question": "Functions called from 3+ different modules",
+      "category": "structural",
+      "tokens_baseline": 0,
+      "tokens_cgc": 2094,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 33.5592501796782,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: impossible. CGC: 15 widely-called functions."
+    },
+    {
+      "question": "Shared utilities used across all controllers",
+      "category": "structural",
+      "tokens_baseline": 0,
+      "tokens_cgc": 2285,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 19.95091699063778,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: infeasible. CGC: 15 utilities used by 5+ controllers."
+    },
+    {
+      "question": "Map the full inheritance hierarchy for Schema classes",
+      "category": "structural",
+      "tokens_baseline": 70416,
+      "tokens_cgc": 4030,
+      "time_baseline_ms": 1013.540375046432,
+      "time_cgc_ms": 7.219917140901089,
+      "correct_baseline": 1,
+      "correct_cgc": 3,
+      "notes": "Grep: 574 class defs (flat list). CGC: 50 parent\u2192child edges (actual hierarchy)."
+    },
+    {
+      "question": "What are the most coupled module pairs?",
+      "category": "structural",
+      "tokens_baseline": 0,
+      "tokens_cgc": 799,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 46.76412511616945,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: impossible. CGC: top 10 coupled module pairs."
+    },
+    {
+      "question": "Who calls hash_password and what does it call?",
+      "category": "structural",
+      "tokens_baseline": 1179,
+      "tokens_cgc": 3610,
+      "time_baseline_ms": 986.411000136286,
+      "time_cgc_ms": 17.00600003823638,
+      "correct_baseline": 1,
+      "correct_cgc": 3,
+      "notes": "Grep: 9 noisy matches. CGC: 5 callers + 5 callees (bidirectional)."
+    },
+    {
+      "question": "Find all dead code (unused functions)",
+      "category": "graph-only",
+      "tokens_baseline": 0,
+      "tokens_cgc": 9019,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 343.09166576713324,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: ~27K functions \u00d7 grep each = hours. CGC: 49 dead functions in 343ms."
+    },
+    {
+      "question": "Find circular import dependencies",
+      "category": "graph-only",
+      "tokens_baseline": 0,
+      "tokens_cgc": 243,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 14.65850044041872,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: impossible. CGC: 0 circular pairs. Requires graph traversal."
+    },
+    {
+      "question": "What is the single most coupled module pair?",
+      "category": "graph-only",
+      "tokens_baseline": 0,
+      "tokens_cgc": 423,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 41.69883392751217,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: impossible. CGC: api_internal <-> validation with 295 calls."
+    },
+    {
+      "question": "Functions with cyclomatic complexity > 10",
+      "category": "graph-only",
+      "tokens_baseline": 0,
+      "tokens_cgc": 3425,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 90.91516677290201,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: can't compute complexity. CGC: 0 functions with complexity > 10."
+    },
+    {
+      "question": "Blast radius of removing the 'queries' module",
+      "category": "graph-only",
+      "tokens_baseline": 0,
+      "tokens_cgc": 319,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 12.909832876175642,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: can't compute transitive impact. CGC: 510 functions in 188 files depend on queries module."
+    },
+    {
+      "question": "Find code paths between create_app and authenticate",
+      "category": "graph-only",
+      "tokens_baseline": 0,
+      "tokens_cgc": 212,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 3.000374883413315,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: impossible. CGC: call chain with ? entries."
+    },
+    {
+      "question": "Identify loosely-coupled modules (extraction candidates)",
+      "category": "graph-only",
+      "tokens_baseline": 0,
+      "tokens_cgc": 748,
+      "time_baseline_ms": 0,
+      "time_cgc_ms": 13.861999846994877,
+      "correct_baseline": 0,
+      "correct_cgc": 3,
+      "notes": "Grep: impossible. CGC: 10 services ranked by coupling ratio. Low ratio = good extraction candidate."
+    }
+  ],
+  "presentation_summary": {
+    "title": "CGC vs Baseline (grep/read)",
+    "repo": "RamPump (5,542 files, 150K nodes, 220K edges)",
+    "total_questions": 25,
+    "baseline_score": "25/75 (33%)",
+    "cgc_score": "72/75 (96%)",
+    "baseline_answerable": "13/25",
+    "cgc_answerable": "24/25",
+    "key_takeaways": [
+      "Simple queries (grep-competitive): Baseline and CGC both work. Grep wins on comment search (TODO/FIXME). CGC advantage is structured output.",
+      "Structural queries: CGC answers 30/30 vs Baseline 5/30. Callers, callees, coupling require graph edges.",
+      "Graph-only queries: Baseline scores 0/21. Dead code, cycles, blast radius, complexity are impossible with grep.",
+      "Honest assessment: For 'where is X defined?', grep is fine. CGC's value is in structural understanding."
+    ],
+    "categories": {
+      "simple": {
+        "questions": 8,
+        "baseline_score": 20,
+        "cgc_score": 21,
+        "max_score": 24
+      },
+      "structural": {
+        "questions": 10,
+        "baseline_score": 5,
+        "cgc_score": 30,
+        "max_score": 30
+      },
+      "graph-only": {
+        "questions": 7,
+        "baseline_score": 0,
+        "cgc_score": 21,
+        "max_score": 21
+      }
+    }
   }
-]
+}
