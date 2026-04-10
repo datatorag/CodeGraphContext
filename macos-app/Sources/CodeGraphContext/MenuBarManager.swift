@@ -30,24 +30,48 @@ struct MenuBarView: View {
         }
 
         Button("Open Visualization") {
-            openWindow(id: "visualization")
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
+            if appState.pythonManager.isVizServerRunning {
+                NSWorkspace.shared.open(URL(string: "http://localhost:\(appState.pythonManager.vizPort)/explore")!)
+            }
         }
         .disabled(!appState.pythonManager.isVizServerRunning)
 
         Button("Index Repository...") {
-            indexRepository()
+            // Activate app so NSOpenPanel appears in front
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+
+            DispatchQueue.main.async {
+                let panel = NSOpenPanel()
+                panel.canChooseDirectories = true
+                panel.canChooseFiles = false
+                panel.allowsMultipleSelection = false
+                panel.message = "Select a repository to index"
+                panel.prompt = "Index"
+
+                if panel.runModal() == .OK, let url = panel.url {
+                    Task { @MainActor in
+                        await appState.indexingManager.indexRepository(at: url.path)
+                    }
+                }
+
+                // Return to accessory mode after dialog closes
+                NSApp.setActivationPolicy(.accessory)
+            }
         }
-        .keyboardShortcut("i", modifiers: [.command])
         .disabled(!appState.pythonManager.isMCPServerRunning || appState.indexingManager.isIndexing)
 
         Divider()
 
-        SettingsLink {
-            Text("Settings...")
+        Button("Settings...") {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            if #available(macOS 14, *) {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            } else {
+                NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+            }
         }
-        .keyboardShortcut(",", modifiers: [.command])
 
         Button("Quit") {
             appState.stop()
@@ -69,7 +93,7 @@ struct MenuBarView: View {
     }
 
     private func serviceItem(_ name: String, port: Int, isRunning: Bool) -> some View {
-        let dot = isRunning ? "\u{1F7E2}" : "\u{1F534}"  // green/red circle emoji
+        let dot = isRunning ? "\u{1F7E2}" : "\u{1F534}"
         let status = isRunning ? "Running on :\(port)" : "Stopped"
         return Text("\(dot) \(name) \u{2014} \(status)")
     }
@@ -90,26 +114,31 @@ struct MenuBarView: View {
 
     private func repoMenu(_ repo: IndexedRepository) -> some View {
         let isWatched = appState.indexingManager.watchedPaths.contains(repo.path)
-        let watchBadge = isWatched ? " \u{1F441}" : ""  // eye emoji
+        let watchBadge = isWatched ? " \u{1F441}" : ""
 
         return Menu("\u{1F4C1} \(repo.name)\(watchBadge)") {
             Text(repo.path)
-                .foregroundColor(.secondary)
 
             Divider()
 
             Button("Reindex") {
-                Task { await appState.indexingManager.indexRepository(at: repo.path) }
+                Task { @MainActor in
+                    await appState.indexingManager.indexRepository(at: repo.path)
+                }
             }
             .disabled(appState.indexingManager.isIndexing)
 
             if isWatched {
                 Button("Stop Watching") {
-                    Task { await appState.indexingManager.unwatchRepository(at: repo.path) }
+                    Task { @MainActor in
+                        await appState.indexingManager.unwatchRepository(at: repo.path)
+                    }
                 }
             } else {
                 Button("Start Watching") {
-                    Task { await appState.indexingManager.watchRepository(at: repo.path) }
+                    Task { @MainActor in
+                        await appState.indexingManager.watchRepository(at: repo.path)
+                    }
                 }
             }
 
@@ -149,25 +178,6 @@ struct MenuBarView: View {
         Menu("\u{1F552} Recent Activity") {
             ForEach(appState.indexingManager.activityLog.prefix(5)) { entry in
                 Text("\(entry.message) \u{2014} \(entry.relativeTime)")
-            }
-        }
-    }
-
-    // MARK: - Actions
-
-    private func indexRepository() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.message = "Select a repository to index"
-        panel.prompt = "Index"
-
-        panel.begin { response in
-            if response == .OK, let url = panel.url {
-                Task {
-                    await appState.indexingManager.indexRepository(at: url.path)
-                }
             }
         }
     }
