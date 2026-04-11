@@ -75,17 +75,21 @@ final class IndexingManager: ObservableObject {
 
         do {
             let result = try await callTool("add_code_to_graph", arguments: ["path": path])
-            // Extract job_id for progress tracking
             if let jobId = extractJobId(from: result) {
                 indexingJobId = jobId
+
+                // Poll job status until complete
+                while true {
+                    try? await Task.sleep(for: .seconds(5))
+                    await pollJobProgress()
+                    if indexingPhase == "completed" { break }
+                }
             }
+
             logger.info("Indexing complete for \(repoName)")
             addActivity("Indexing complete for \(repoName)")
 
-            // Auto-watch the repo so the graph stays in sync as files change
             await watchRepository(at: path)
-
-            // Refresh stats
             await refreshAll()
         } catch {
             logger.error("Indexing failed for \(repoName): \(error)")
