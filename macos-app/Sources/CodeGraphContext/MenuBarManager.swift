@@ -15,8 +15,12 @@ struct MenuBarView: View {
     }
 
     var body: some View {
-        // ── Section 1: Plugin & Setup ──
-        pluginSection
+        // ── Section 1: Setup ──
+        Button("Setup Guide...") {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "setup-guide")
+        }
         Divider()
 
         // ── Section 2: Repositories ──
@@ -44,40 +48,6 @@ struct MenuBarView: View {
             NSApplication.shared.terminate(nil)
         }
         .keyboardShortcut("q", modifiers: [.command])
-    }
-
-    // ═══════════════════════════════════════════════════
-    // MARK: - Section 1: Plugin & Setup
-    // ═══════════════════════════════════════════════════
-
-    @ViewBuilder
-    private var pluginSection: some View {
-        let installed = Self.isPluginInstalled()
-        if installed {
-            Text("\u{2705} Claude Code Plugin Installed")
-        } else {
-            Button("\u{26A0}\u{FE0F} Plugin Not Installed \u{2014} Install...") {
-                NSApp.setActivationPolicy(.regular)
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "setup-guide")
-            }
-            Button("Setup Guide...") {
-                NSApp.setActivationPolicy(.regular)
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "setup-guide")
-            }
-        }
-    }
-
-    private static func isPluginInstalled() -> Bool {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let path = "\(home)/.claude/plugins/installed_plugins.json"
-        guard let data = FileManager.default.contents(atPath: path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let plugins = json["plugins"] as? [String: Any] else {
-            return false
-        }
-        return plugins.keys.contains { $0.contains("codegraphcontext") }
     }
 
     // ═══════════════════════════════════════════════════
@@ -194,6 +164,18 @@ struct MenuBarView: View {
         Text("Status")
             .foregroundColor(.secondary)
 
+        // Plugin status
+        let pluginOk = Self.isPluginInstalled()
+        if pluginOk {
+            Text("\u{2705} Claude Code Plugin Installed")
+        } else {
+            Button("\u{26A0}\u{FE0F} Plugin Not Installed \u{2014} Install...") {
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "setup-guide")
+            }
+        }
+
         // Services: condensed if all healthy, expanded if any down
         let allUp = pm.isFalkorDBRunning && pm.isMCPServerRunning && pm.isVizServerRunning
         if allUp {
@@ -208,6 +190,17 @@ struct MenuBarView: View {
         if let s = im.graphStats {
             Text("\u{1F4CA} \(fmt(s.totalNodes)) nodes \u{00B7} \(fmt(s.files)) files \u{00B7} \(fmt(s.functions)) functions")
         }
+    }
+
+    private static func isPluginInstalled() -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let path = "\(home)/.claude/plugins/installed_plugins.json"
+        guard let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let plugins = json["plugins"] as? [String: Any] else {
+            return false
+        }
+        return plugins.keys.contains { $0.contains("codegraphcontext") }
     }
 
     private func svcLine(_ name: String, port: Int, up: Bool) -> some View {
