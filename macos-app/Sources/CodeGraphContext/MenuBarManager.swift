@@ -98,7 +98,7 @@ struct MenuBarView: View {
             }
         }
         .keyboardShortcut("i", modifiers: [.command])
-        .disabled(!pm.isMCPServerRunning || im.isIndexing)
+        .disabled(!pm.isMCPServerRunning)
     }
 
     private func repoSubmenu(_ repo: IndexedRepository) -> some View {
