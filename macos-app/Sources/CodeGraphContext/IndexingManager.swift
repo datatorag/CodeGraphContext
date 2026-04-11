@@ -152,9 +152,15 @@ final class IndexingManager: ObservableObject {
     func removeRepository(at path: String) async {
         let name = URL(fileURLWithPath: path).lastPathComponent
 
-        // Stop watching first if active
-        if watchedPaths.contains(path) {
-            await unwatchRepository(at: path)
+        // Remove from local list immediately so menu updates
+        indexedRepositories.removeAll { $0.path == path }
+        watchedPaths.remove(path)
+
+        // Stop watching if active
+        do {
+            _ = try await callTool("unwatch_directory", arguments: ["path": path])
+        } catch {
+            // May not be watched — ignore
         }
 
         // Delete from graph
@@ -165,11 +171,10 @@ final class IndexingManager: ObservableObject {
         } catch {
             logger.error("Failed to delete repository \(path): \(error)")
             addActivity("Failed to remove \(name)")
-            return
         }
 
-        // Refresh lists and stats
-        await refreshAll()
+        // Refresh stats
+        await refreshGraphStats()
     }
 
     func unwatchAll() async {
