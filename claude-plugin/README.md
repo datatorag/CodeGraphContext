@@ -1,12 +1,13 @@
 # CodeGraphContext — Claude Code Plugin
 
-Code graph analysis powered by FalkorDB. Index repositories into a graph database, query relationships between functions, classes, and modules, detect dead code, and visualize architecture.
+Code graph analysis powered by FalkorDB. Index repositories into a graph database, query relationships between functions/classes/modules, detect dead code, and analyze architecture.
 
 ## Prerequisites
 
-1. **CodeGraphContext Mac app** must be running (menu bar icon visible)
-2. The MCP server must be healthy (green status dot in the menu bar)
-3. At least one repository must be indexed
+1. **CodeGraphContext Mac app** running (menu bar icon with green dot), OR the MCP server running manually on port 47321
+2. At least one repository indexed
+
+See [GETTING_STARTED.md](../GETTING_STARTED.md) for full setup instructions.
 
 ## Installation
 
@@ -31,60 +32,62 @@ Or add manually to your project's `.mcp.json`:
 
 ## Available Tools
 
-### Indexing
-- **add_code_to_graph** — Index a repository into the graph database
-- **list_repos** — List all indexed repositories
-
-### Code Search & Navigation
-- **find_code** — Search for functions, classes, or modules by name or pattern
-- **get_file_summary** — Get an overview of a file's contents and structure
-- **get_function_detail** — Get full details of a function (signature, body, dependencies)
+### Code Search
+- **find_code** — Search for functions, classes, or variables by name. Returns compact summaries by default; use `include_source=true` for full source.
 
 ### Relationship Analysis
-- **who_calls_function** — Find all callers of a given function
-- **what_does_function_call** — Find all functions called by a given function
-- **analyze_code_relationships** — Map relationships between code entities
-- **get_dependency_graph** — Get the dependency graph for a module or package
-- **find_import_chains** — Trace import/dependency chains between two modules
+- **analyze_code_relationships** — The main analysis tool. Supports these query types:
+  - `find_callers` / `find_callees` — Direct callers or callees of a function
+  - `find_all_callers` / `find_all_callees` — Transitive (multi-hop) callers/callees
+  - `find_importers` — Files that import a module
+  - `class_hierarchy` — Inheritance tree for a class
+  - `module_deps` — Module dependency analysis
+  - `call_chain` — Trace call paths between functions
+  - `find_functions_by_decorator` / `find_functions_by_argument` — Search by metadata
+  - `find_complexity` — Cyclomatic complexity for a function
 
 ### Architecture & Quality
-- **find_dead_code** — Detect unreachable or unused code
-- **find_circular_dependencies** — Detect circular import/dependency cycles
-- **get_module_coupling** — Measure coupling between modules
-- **get_code_complexity** — Analyze complexity metrics for functions or files
+- **find_dead_code** — Detect unused functions with confidence scoring (high/medium/low). Automatically filters framework callbacks, test fixtures, and interface overrides.
+- **calculate_cyclomatic_complexity** — Complexity metric for a specific function
+- **find_most_complex_functions** — Top N most complex functions in the codebase
+
+### Indexing & Management
+- **add_code_to_graph** — Index a git repository
+- **list_indexed_repositories** — List all indexed repos
+- **delete_repository** — Remove a repo from the graph
+- **watch_directory** / **unwatch_directory** — Live file watching for auto-sync
+- **get_repository_stats** — Node/edge count breakdown
+- **check_job_status** — Monitor indexing progress
 
 ### Graph Queries
-- **query_graph** — Run a raw Cypher query against the code graph
-- **get_graph_stats** — Get statistics about the indexed graph (node/edge counts, etc.)
+- **execute_cypher_query** — Run raw Cypher queries against the graph
 
-## Example Usage
+## Example Prompts
 
-### Index a repository
 ```
-> Index the RamPump project at /Users/myang/git/RamPump
+Who calls the authenticate function and what arguments do they pass?
 ```
-Claude will use `add_code_to_graph` to index the repository.
 
-### Explore architecture
 ```
-> How is the RamPump backend structured? What are the main modules and how do they connect?
+Find dead code in the Python backend
 ```
-Claude will use `find_code`, `analyze_code_relationships`, and `get_dependency_graph` to map the architecture.
 
-### Find callers
 ```
-> What calls the main entry point in RamPump?
+What would break if I changed the BaseSchema class?
 ```
-Claude will use `who_calls_function` to trace the call chain.
 
-### Detect dead code
 ```
-> Find dead code in the Python backend
+What are the most coupled module pairs in this project?
 ```
-Claude will use `find_dead_code` to identify unreachable functions and unused imports.
 
-### Custom graph queries
 ```
-> Show me all Python classes that inherit from BaseModel
+Show me the full inheritance hierarchy for Schema classes
 ```
-Claude will use `query_graph` with a Cypher query to find the inheritance chain.
+
+```
+Find all functions called from 3+ different modules
+```
+
+```
+What's the blast radius of removing the queries module?
+```
