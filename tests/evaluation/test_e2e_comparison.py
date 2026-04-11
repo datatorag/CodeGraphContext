@@ -309,7 +309,7 @@ class TestStructural:
         out, ms = _grep("def authenticate")
         r.tokens_baseline = len(out)
         r.time_baseline_ms = ms
-        r.correct_baseline = 0  # impossible with grep alone
+        r.correct_baseline = 0  # would need recursive grep for each callee
 
         res, ms, chars = _mcp_rel("find_all_callees", "authenticate")
         r.tokens_cgc = chars
@@ -317,7 +317,7 @@ class TestStructural:
         callees = res.get("results", [])
         r.correct_cgc = 3 if callees else 1
 
-        r.notes = f"Grep: can't trace call chains. CGC: {len(callees)} transitive callees."
+        r.notes = f"Grep: would need recursive grep per callee. CGC: {len(callees)} transitive callees in one query."
         results.append(r); _print(r)
 
     def test_t3_schema_change_impact(self, results):
@@ -350,7 +350,7 @@ class TestStructural:
         r = Result("Which modules have the highest fan-out?", "structural")
         r.tokens_baseline = 0
         r.time_baseline_ms = 0
-        r.correct_baseline = 0  # impossible with grep
+        r.correct_baseline = 0  # would need to parse all imports and count cross-module calls
 
         res, ms, chars = _mcp("execute_cypher_query", {
             "cypher_query": (
@@ -367,7 +367,7 @@ class TestStructural:
         pairs = res.get("results", [])
         r.correct_cgc = 3 if pairs else 0
 
-        r.notes = f"Grep: infeasible. CGC: top {len(pairs)} modules by fan-out."
+        r.notes = f"Grep: would require parsing all files + counting cross-module calls. CGC: top {len(pairs)} modules by fan-out."
         results.append(r); _print(r)
 
     def test_t5_dependency_graph_services(self, results):
@@ -418,7 +418,7 @@ class TestStructural:
         funcs = res.get("results", [])
         r.correct_cgc = 3 if funcs else 0
 
-        r.notes = f"Grep: impossible. CGC: {len(funcs)} widely-called functions."
+        r.notes = f"Grep: would need to grep each function and count unique calling modules. CGC: {len(funcs)} widely-called functions."
         results.append(r); _print(r)
 
     def test_t7_shared_utilities_across_controllers(self, results):
@@ -444,7 +444,7 @@ class TestStructural:
         utils = res.get("results", [])
         r.correct_cgc = 3 if utils else 0
 
-        r.notes = f"Grep: infeasible. CGC: {len(utils)} utilities used by 5+ controllers."
+        r.notes = f"Grep: would need cross-referencing all controller imports. CGC: {len(utils)} utilities used by 5+ controllers."
         results.append(r); _print(r)
 
     def test_t8_inheritance_hierarchy_schemas(self, results):
@@ -494,7 +494,7 @@ class TestStructural:
         pairs = res.get("results", [])
         r.correct_cgc = 3 if pairs else 0
 
-        r.notes = f"Grep: impossible. CGC: top {len(pairs)} coupled module pairs."
+        r.notes = f"Grep: would need to parse + aggregate all cross-module calls. CGC: top {len(pairs)} coupled module pairs."
         results.append(r); _print(r)
 
     def test_t10_callers_and_callees_chain(self, results):
@@ -520,7 +520,7 @@ class TestStructural:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Category 3: GRAPH-ONLY (7 questions) — impossible without graph
+# Category 3: GRAPH-ONLY (7 questions) — impractical with grep at scale
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestGraphOnly:
@@ -538,7 +538,7 @@ class TestGraphOnly:
         funcs = res.get("results", {}).get("potentially_unused_functions", [])
         r.correct_cgc = 3 if funcs else 0
 
-        r.notes = f"Grep: ~27K functions × grep each = hours. CGC: {len(funcs)} dead functions in {ms:.0f}ms."
+        r.notes = f"Grep: possible but ~27K functions × grep each = hours of scripting. CGC: {len(funcs)} dead functions in {ms:.0f}ms."
         results.append(r); _print(r)
 
     def test_g2_circular_dependencies(self, results):
@@ -562,7 +562,7 @@ class TestGraphOnly:
         cycles = res.get("results", [])
         r.correct_cgc = 3  # correct even if 0 cycles (means none exist)
 
-        r.notes = f"Grep: impossible. CGC: {len(cycles)} circular pairs. Requires graph traversal."
+        r.notes = f"Grep: could cross-reference imports but slow for large codebases. CGC: {len(cycles)} circular pairs via graph traversal."
         results.append(r); _print(r)
 
     def test_g3_most_coupled_pair(self, results):
@@ -589,14 +589,14 @@ class TestGraphOnly:
         r.correct_cgc = 3 if pairs else 0
 
         top = pairs[0] if pairs else {}
-        r.notes = f"Grep: impossible. CGC: {top.get('pair', '?')} with {top.get('calls', 0)} calls."
+        r.notes = f"Grep: would need same aggregation as Q17. CGC: {top.get('pair', '?')} with {top.get('calls', 0)} calls."
         results.append(r); _print(r)
 
     def test_g4_high_complexity(self, results):
         r = Result("Functions with cyclomatic complexity > 10", "graph-only")
         r.tokens_baseline = 0
         r.time_baseline_ms = 0
-        r.correct_baseline = 0  # grep can't compute complexity
+        r.correct_baseline = 0  # needs AST parsing (radon/pylint), not grep
 
         res, ms, chars = _mcp("find_most_complex_functions", {"limit": "20"})
         r.tokens_cgc = chars
@@ -605,7 +605,7 @@ class TestGraphOnly:
         high = [f for f in funcs if f.get("cyclomatic_complexity", 0) > 10]
         r.correct_cgc = 3 if funcs else 0
 
-        r.notes = f"Grep: can't compute complexity. CGC: {len(high)} functions with complexity > 10."
+        r.notes = f"Grep: needs AST tools (radon/pylint). CGC: {len(high)} functions with complexity > 10."
         results.append(r); _print(r)
 
     def test_g5_blast_radius(self, results):
@@ -627,7 +627,7 @@ class TestGraphOnly:
         row = res.get("results", [{}])[0] if res.get("results") else {}
         r.correct_cgc = 3 if row.get("affected_functions", 0) > 0 else 1
 
-        r.notes = (f"Grep: can't compute transitive impact. "
+        r.notes = (f"Grep: would need recursive grep for each caller, then each caller's callers. "
                    f"CGC: {row.get('affected_functions', 0)} functions in "
                    f"{row.get('affected_files', 0)} files depend on queries module.")
         results.append(r); _print(r)
@@ -646,7 +646,7 @@ class TestGraphOnly:
         chain = res.get("results", [])
         r.correct_cgc = 3 if chain else 1
 
-        r.notes = f"Grep: impossible. CGC: call chain with {len(chain) if isinstance(chain, list) else '?'} entries."
+        r.notes = f"Grep: would need to manually trace each hop. CGC: call chain with {len(chain) if isinstance(chain, list) else '?'} entries."
         results.append(r); _print(r)
 
     def test_g7_extractable_modules(self, results):
@@ -670,7 +670,7 @@ class TestGraphOnly:
         svcs = res.get("results", [])
         r.correct_cgc = 3 if svcs else 0
 
-        r.notes = (f"Grep: impossible. CGC: {len(svcs)} services ranked by coupling ratio. "
+        r.notes = (f"Grep: would need to parse imports + count calls per service. CGC: {len(svcs)} services ranked by coupling ratio. "
                    "Low ratio = good extraction candidate.")
         results.append(r); _print(r)
 
@@ -753,7 +753,7 @@ class TestSummary:
             "key_takeaways": [
                 f"Simple queries (grep-competitive): Baseline and CGC both work. Grep wins on comment search (TODO/FIXME). CGC advantage is structured output.",
                 f"Structural queries: CGC answers {sum(r.correct_cgc for r in cats.get('structural',[]))}/{len(cats.get('structural',[]))*3} vs Baseline {sum(r.correct_baseline for r in cats.get('structural',[]))}/{len(cats.get('structural',[]))*3}. Callers, callees, coupling require graph edges.",
-                f"Graph-only queries: Baseline scores 0/{len(cats.get('graph-only',[]))*3}. Dead code, cycles, blast radius, complexity are impossible with grep.",
+                f"Graph-only queries: Baseline scores 0/{len(cats.get('graph-only',[]))*3}. Dead code, cycles, blast radius, complexity are technically possible with grep but impractical at scale (hours of scripting vs milliseconds).",
                 "Honest assessment: For 'where is X defined?', grep is fine. CGC's value is in structural understanding.",
             ],
             "categories": {},

@@ -165,7 +165,7 @@ QUESTIONS = [
     {
         "question": "Which modules have the highest fan-out?",
         "category": "structural",
-        "baseline": lambda: "(grep cannot compute cross-module call counts)",
+        "baseline": lambda: "(grep would require parsing all files and aggregating call counts — hours of scripting)",
         "cgc": lambda: json.dumps(_mcp("execute_cypher_query", {
             "cypher_query": "MATCH (a:Function)-[:CALLS]->(b:Function) WHERE a.path <> b.path WITH split(a.path, '/') AS parts, count(DISTINCT b.path) AS fan_out WITH parts[size(parts)-2] AS module, fan_out RETURN module, sum(fan_out) AS total_fan_out ORDER BY total_fan_out DESC LIMIT 10"
         }).get("results", []), indent=2),
@@ -183,7 +183,7 @@ QUESTIONS = [
     {
         "question": "Functions called from 3+ different modules",
         "category": "structural",
-        "baseline": lambda: "(grep cannot count unique calling modules per function)",
+        "baseline": lambda: "(grep would need to grep each function name then count unique calling directories)",
         "cgc": lambda: json.dumps(_mcp("execute_cypher_query", {
             "cypher_query": "MATCH (caller:Function)-[:CALLS]->(target:Function) WHERE caller.path <> target.path WITH target, count(DISTINCT split(caller.path, '/')[-2]) AS caller_modules WHERE caller_modules >= 3 RETURN target.name AS name, target.path AS path, caller_modules ORDER BY caller_modules DESC LIMIT 15"
         }).get("results", []), indent=2),
@@ -192,7 +192,7 @@ QUESTIONS = [
     {
         "question": "Shared utilities used across all controllers",
         "category": "structural",
-        "baseline": lambda: "(grep cannot identify cross-controller utility usage)",
+        "baseline": lambda: "(grep would need to cross-reference all controller imports — many hours for 5K+ files)",
         "cgc": lambda: json.dumps(_mcp("execute_cypher_query", {
             "cypher_query": "MATCH (caller:Function)-[:CALLS]->(util:Function) WHERE caller.path CONTAINS '/controllers/' AND NOT util.path CONTAINS '/controllers/' WITH util, count(DISTINCT split(caller.path, '/')[-1]) AS controller_count WHERE controller_count >= 5 RETURN util.name AS utility, util.path AS path, controller_count ORDER BY controller_count DESC LIMIT 15"
         }).get("results", []), indent=2),
@@ -210,7 +210,7 @@ QUESTIONS = [
     {
         "question": "What are the most coupled module pairs?",
         "category": "structural",
-        "baseline": lambda: "(grep cannot compute cross-module coupling metrics)",
+        "baseline": lambda: "(grep would need to parse all imports and count cross-module calls — hours of scripting)",
         "cgc": lambda: json.dumps(_mcp("execute_cypher_query", {
             "cypher_query": "MATCH (a:Function)-[:CALLS]->(b:Function) WHERE a.path <> b.path WITH split(a.path, '/') AS ap, split(b.path, '/') AS bp WITH ap[size(ap)-2] AS a_mod, bp[size(bp)-2] AS b_mod WHERE a_mod <> b_mod WITH a_mod, b_mod, count(*) AS calls RETURN a_mod + ' -> ' + b_mod AS pair, calls ORDER BY calls DESC LIMIT 10"
         }).get("results", []), indent=2),
@@ -238,7 +238,7 @@ QUESTIONS = [
     {
         "question": "Find circular import dependencies",
         "category": "graph-only",
-        "baseline": lambda: "(grep cannot detect import cycles — requires graph cycle detection)",
+        "baseline": lambda: "(grep could cross-reference imports but slow and error-prone for 5K+ files)",
         "cgc": lambda: json.dumps(_mcp("execute_cypher_query", {
             "cypher_query": "MATCH (a:Function)-[:CALLS]->(b:Function) WHERE a.path <> b.path WITH a.path AS fa, b.path AS fb MATCH (c:Function)-[:CALLS]->(d:Function) WHERE c.path = fb AND d.path = fa AND c.path < d.path RETURN DISTINCT c.path AS file_a, d.path AS file_b LIMIT 10"
         }).get("results", []), indent=2),
@@ -247,7 +247,7 @@ QUESTIONS = [
     {
         "question": "What is the most coupled module pair?",
         "category": "graph-only",
-        "baseline": lambda: "(grep cannot aggregate cross-module call counts)",
+        "baseline": lambda: "(grep would need same aggregation as fan-out question)",
         "cgc": lambda: json.dumps(_mcp("execute_cypher_query", {
             "cypher_query": "MATCH (a:Function)-[:CALLS]->(b:Function) WHERE a.path <> b.path WITH split(a.path, '/') AS ap, split(b.path, '/') AS bp WITH ap[size(ap)-2] AS a_mod, bp[size(bp)-2] AS b_mod WHERE a_mod <> b_mod WITH a_mod, b_mod, count(*) AS calls RETURN a_mod + ' <-> ' + b_mod AS pair, calls ORDER BY calls DESC LIMIT 1"
         }).get("results", []), indent=2),
@@ -256,14 +256,14 @@ QUESTIONS = [
     {
         "question": "Functions with highest cyclomatic complexity",
         "category": "graph-only",
-        "baseline": lambda: "(grep cannot compute cyclomatic complexity)",
+        "baseline": lambda: "(requires AST parsing — tools like radon/pylint can do this, but not grep)",
         "cgc": lambda: json.dumps(_mcp("find_most_complex_functions", {"limit": "10"}).get("results", [])[:5], indent=2),
         "ground_truth": "Cyclomatic complexity counts independent code paths. High complexity = hard to test and maintain.",
     },
     {
         "question": "Blast radius of removing the 'queries' module",
         "category": "graph-only",
-        "baseline": lambda: "(grep cannot compute transitive dependents)",
+        "baseline": lambda: "(grep would need recursive caller tracing — many hops, many grep calls)",
         "cgc": lambda: json.dumps(_mcp("execute_cypher_query", {
             "cypher_query": "MATCH (caller:Function)-[:CALLS]->(target:Function) WHERE target.path CONTAINS '/queries.' RETURN count(DISTINCT caller) AS affected_functions, count(DISTINCT split(caller.path, '/')[-1]) AS affected_files"
         }).get("results", []), indent=2),
@@ -272,14 +272,14 @@ QUESTIONS = [
     {
         "question": "Find code paths between create_app and authenticate",
         "category": "graph-only",
-        "baseline": lambda: "(grep cannot trace multi-hop call chains)",
+        "baseline": lambda: "(grep would need to read each file in the chain sequentially)",
         "cgc": lambda: json.dumps(_mcp_rel("call_chain", "authenticate"), indent=2),
         "ground_truth": "A call chain traces the path from one function to another through intermediate CALLS edges.",
     },
     {
         "question": "Identify loosely-coupled services (extraction candidates)",
         "category": "graph-only",
-        "baseline": lambda: "(grep cannot compute coupling ratios)",
+        "baseline": lambda: "(grep would need to parse imports + count external calls per service — hours)",
         "cgc": lambda: json.dumps(_mcp("execute_cypher_query", {
             "cypher_query": "MATCH (a:Function)-[:CALLS]->(b:Function) WHERE a.path CONTAINS '/services/' AND NOT b.path CONTAINS '/services/' WITH split(a.path, '/') AS ap, count(*) AS external_calls WITH ap[size(ap)-2] AS svc, external_calls RETURN svc, external_calls ORDER BY external_calls ASC LIMIT 10"
         }).get("results", []), indent=2),
