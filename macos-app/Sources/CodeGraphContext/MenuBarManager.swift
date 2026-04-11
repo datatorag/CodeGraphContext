@@ -1,10 +1,6 @@
 import SwiftUI
 import AppKit
 
-private let pluginsJsonPath: String = {
-    FileManager.default.homeDirectoryForCurrentUser.path + "/.claude/plugins/installed_plugins.json"
-}()
-
 private func activateApp() {
     NSApp.setActivationPolicy(.regular)
     NSApp.activate(ignoringOtherApps: true)

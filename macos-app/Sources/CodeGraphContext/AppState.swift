@@ -50,13 +50,13 @@ final class AppState: ObservableObject {
         guard !isRefreshing else { return }
         isRefreshing = true
         Task {
+            defer { isRefreshing = false }
             await pythonManager.checkAllHealth()
             await indexingManager.refreshAll()
             if indexingManager.isIndexing {
                 await indexingManager.pollJobProgress()
             }
             checkPluginInstalled()
-            isRefreshing = false
         }
     }
 

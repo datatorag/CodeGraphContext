@@ -78,11 +78,13 @@ final class IndexingManager: ObservableObject {
             if let jobId = extractJobId(from: result) {
                 indexingJobId = jobId
 
-                // Poll job status until complete
-                while true {
+                // Poll until complete, failed, or timeout (60 min)
+                let maxPolls = 720  // 720 × 5s = 60 min
+                for _ in 0..<maxPolls {
                     try? await Task.sleep(for: .seconds(5))
                     await pollJobProgress()
-                    if indexingPhase == "completed" { break }
+                    let phase = indexingPhase ?? ""
+                    if phase == "completed" || phase == "failed" || phase == "error" { break }
                 }
             }
 

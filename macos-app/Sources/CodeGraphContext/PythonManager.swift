@@ -17,7 +17,7 @@ final class PythonManager: ObservableObject {
     private var falkorDBProcess: Process?
     private var mcpProcess: Process?
     private var vizProcess: Process?
-    private var initialHealthCheckDone = false
+    // No timer — health checks are on-demand via AppState.refreshOnMenuOpen()
     private var mcpRestartCount = 0
     private var vizRestartCount = 0
     private let maxRestarts = 3
@@ -302,7 +302,6 @@ final class PythonManager: ObservableObject {
         Task {
             try? await Task.sleep(for: .seconds(3))
             await checkAllHealth()
-            initialHealthCheckDone = true
         }
     }
 
