@@ -26,8 +26,8 @@ final class PythonManager: ObservableObject {
 
     // MARK: - Configuration
 
-    var mcpPort: Int = 47321
-    var vizPort: Int = 47322
+    private(set) var mcpPort: Int = 47321
+    private(set) var vizPort: Int = 47322
     let falkorDBPort = 6379
 
     /// Path to the bundled Python interpreter inside the app bundle.
@@ -297,7 +297,7 @@ final class PythonManager: ObservableObject {
     // MARK: - Health Checks
 
     private func startHealthChecks() {
-        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.checkAllHealth()
             }

@@ -29,10 +29,6 @@ struct CodeGraphContextApp: App {
         }
         .defaultSize(width: 520, height: 440)
         .windowResizability(.contentSize)
-
-        Settings {
-            SettingsView()
-        }
     }
 
     /// Hub-and-spoke graph in a circle ring (Life360-inspired).

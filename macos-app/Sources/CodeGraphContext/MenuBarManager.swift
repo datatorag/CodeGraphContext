@@ -1,6 +1,15 @@
 import SwiftUI
 import AppKit
 
+private let pluginsJsonPath: String = {
+    FileManager.default.homeDirectoryForCurrentUser.path + "/.claude/plugins/installed_plugins.json"
+}()
+
+private func activateApp() {
+    NSApp.setActivationPolicy(.regular)
+    NSApp.activate(ignoringOtherApps: true)
+}
+
 struct MenuBarView: View {
     @ObservedObject var appState: AppState
     @Environment(\.openWindow) private var openWindow
@@ -15,36 +24,19 @@ struct MenuBarView: View {
     }
 
     var body: some View {
-        // Refresh data each time the menu opens (body is re-evaluated on open)
         Color.clear.frame(height: 0).onAppear { appState.refreshOnMenuOpen() }
 
-        // ── Section 1: Setup ──
         Button("Setup Guide...") {
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
+            activateApp()
             openWindow(id: "setup-guide")
         }
         Divider()
 
-        // ── Section 2: Repositories ──
         reposSection
         Divider()
 
-        // ── Section 3: Status ──
         statusSection
         Divider()
-
-        // ── Section 4: App ──
-        Button("Settings...") {
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
-            if #available(macOS 14, *) {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-            } else {
-                NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-            }
-        }
-        .keyboardShortcut(",", modifiers: [.command])
 
         Button("Quit") {
             appState.stop()
@@ -53,9 +45,7 @@ struct MenuBarView: View {
         .keyboardShortcut("q", modifiers: [.command])
     }
 
-    // ═══════════════════════════════════════════════════
-    // MARK: - Section 2: Repositories
-    // ═══════════════════════════════════════════════════
+    // MARK: - Repositories
 
     @ViewBuilder
     private var reposSection: some View {
@@ -78,8 +68,8 @@ struct MenuBarView: View {
         }
 
         Button("Index Repository...") {
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
+            activateApp()
+            // Deferred to let SwiftUI dismiss the menu before showing the modal
             DispatchQueue.main.async {
                 let panel = NSOpenPanel()
                 panel.canChooseDirectories = true
@@ -140,8 +130,8 @@ struct MenuBarView: View {
             Divider()
 
             Button("Remove from Index") {
-                NSApp.setActivationPolicy(.regular)
-                NSApp.activate(ignoringOtherApps: true)
+                activateApp()
+                // Deferred to let SwiftUI dismiss the menu before showing the modal
                 DispatchQueue.main.async {
                     let alert = NSAlert()
                     alert.messageText = "Remove \(repo.name)?"
@@ -158,28 +148,22 @@ struct MenuBarView: View {
         }
     }
 
-    // ═══════════════════════════════════════════════════
-    // MARK: - Section 3: Status
-    // ═══════════════════════════════════════════════════
+    // MARK: - Status
 
     @ViewBuilder
     private var statusSection: some View {
         Text("Status")
             .foregroundColor(.secondary)
 
-        // Plugin status
-        let pluginOk = Self.isPluginInstalled()
-        if pluginOk {
+        if appState.isPluginInstalled {
             Text("\u{2705} Claude Code Plugin Installed")
         } else {
             Button("\u{26A0}\u{FE0F} Plugin Not Installed \u{2014} Install...") {
-                NSApp.setActivationPolicy(.regular)
-                NSApp.activate(ignoringOtherApps: true)
+                activateApp()
                 openWindow(id: "setup-guide")
             }
         }
 
-        // Services: condensed if all healthy, expanded if any down
         let allUp = pm.isFalkorDBRunning && pm.isMCPServerRunning && pm.isVizServerRunning
         if allUp {
             Text("\u{1F7E2} All Services Running")
@@ -189,21 +173,9 @@ struct MenuBarView: View {
             svcLine("Visualization", port: pm.vizPort, up: pm.isVizServerRunning)
         }
 
-        // Graph stats: single line
         if let s = im.graphStats {
             Text("\u{1F4CA} \(fmt(s.totalNodes)) nodes \u{00B7} \(fmt(s.files)) files \u{00B7} \(fmt(s.functions)) functions")
         }
-    }
-
-    private static func isPluginInstalled() -> Bool {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let path = "\(home)/.claude/plugins/installed_plugins.json"
-        guard let data = FileManager.default.contents(atPath: path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let plugins = json["plugins"] as? [String: Any] else {
-            return false
-        }
-        return plugins.keys.contains { $0.contains("codegraphcontext") }
     }
 
     private func svcLine(_ name: String, port: Int, up: Bool) -> some View {
@@ -212,9 +184,7 @@ struct MenuBarView: View {
         return Text("\(dot) \(name) \(status)")
     }
 
-    // ═══════════════════════════════════════════════════
     // MARK: - Helpers
-    // ═══════════════════════════════════════════════════
 
     private func fmt(_ n: Int) -> String {
         if n >= 1000 {
