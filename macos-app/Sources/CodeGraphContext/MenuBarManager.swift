@@ -65,6 +65,12 @@ struct MenuBarView: View {
 
         Divider()
 
+        Button("Setup Guide...") {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "setup-guide")
+        }
+
         Button("Settings...") {
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
