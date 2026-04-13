@@ -69,6 +69,38 @@ A powerful **MCP server** and **CLI toolkit** that indexes local code into a gra
 
 ---
 
+## 📊 Eval Results
+
+Head-to-head comparison: 10 structural code questions, 8,700+ file codebase, Claude Opus 4.6.
+
+| Metric | Without CGC | With CGC | Improvement |
+|---|---|---|---|
+| Wall Time | 11.6 min | 3.0 min | **4x faster** |
+| Cost | $81.88 | $17.71 | **78% cheaper** |
+| Tokens | 30.2M | 2.8M | **91% fewer** |
+| Tool Calls | 309 | 36 | **88% fewer** |
+| Subagents | 10 | 0 | **100% fewer** |
+| Hallucinations | 1 | 0 | **CGC wins** |
+
+---
+
+## 🖥️ Mac App
+
+A native macOS menu bar app for one-click repo indexing and service management.
+
+**[Download the latest release](https://github.com/datatorag/CodeGraphContext/releases/tag/v1.0.0)**
+
+Features:
+- One-click repo indexing with progress tracking
+- Auto-launches FalkorDB, MCP server, and visualization server
+- Per-repo watch mode for automatic re-indexing on file changes
+- Claude Code plugin install and setup guide
+- Graph stats and service health at a glance
+
+See [GETTING_STARTED.md](GETTING_STARTED.md) for build-from-source instructions.
+
+---
+
 ## 📍 Quick Navigation
 * [🚀 Quick Start](#quick-start) 
 * [🌐 Supported Programming Languages](#supported-programming-languages) 
